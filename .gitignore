@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data & models (large/generated)
+data/raw/
+data/processed/
+models/*.joblib
+results/
+
+# OS
+.DS_Store
+
+# Logs
+*.log

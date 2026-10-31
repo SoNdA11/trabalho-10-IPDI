@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trabalho 10 — Classificação de Imagens de Satélite · PDI</title>
+<meta name="description" content="Seminário sobre classificação de cobertura do solo com imagens de satélite Sentinel-2/EuroSAT, extração de características espectrais e Random Forest.">
+<link rel="icon" href="../../assets/icons/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="../css/light.css" id="theme-light">
+<link rel="stylesheet" href="../css/dark.css" id="theme-dark" disabled>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="light">
+
+<div class="progress-bar" aria-hidden="true"><div class="progress-fill" id="progress-fill"></div></div>
+<div class="section-indicator" id="section-indicator">Capa</div>
+<div class="slide-counter" id="slide-counter">1 / 25</div>
+
+<nav class="nav-menu" aria-label="Navegação por seção">
+  <button class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="nav-items" title="Menu de seções (M)">☰</button>
+  <div class="nav-items" id="nav-items">
+    <div class="nav-group"><span class="nav-group-label">Capa e contextualização — Ana Beatriz</span>
+      <button data-slide="0">1 · Capa</button>
+      <button data-slide="1">2 · Contextualização</button>
+      <button data-slide="2">3 · Sensoriamento remoto</button>
+      <button data-slide="3">4 · Fonte dos dados (Sentinel-2/EuroSAT)</button>
+      <button data-slide="4">5 · Área de estudo e classes</button>
+      <button data-slide="5">6 · Classes de cobertura</button>
+    </div>
+    <div class="nav-group"><span class="nav-group-label">Metodologia — Cindy Vitoria</span>
+      <button data-slide="6">7 · Metodologia (pipeline)</button>
+      <button data-slide="7">8 · Pré-processamento</button>
+      <button data-slide="8">9 · Bandas espectrais</button>
+      <button data-slide="9">10 · Composição colorida</button>
+      <button data-slide="10">11 · Preparação das amostras</button>
+    </div>
+    <div class="nav-group"><span class="nav-group-label">Características — Eduardo Marinho</span>
+      <button data-slide="11">12 · Extração de características</button>
+      <button data-slide="12">13 · Índices espectrais (NDVI/NDWI)</button>
+      <button data-slide="13">14 · Histogramas e estatísticas</button>
+      <button data-slide="14">15 · Representação numérica</button>
+    </div>
+    <div class="nav-group"><span class="nav-group-label">Classificador — Luis Jeronimo</span>
+      <button data-slide="15">16 · Algoritmo: Random Forest</button>
+      <button data-slide="16">17 · Treinamento e teste</button>
+      <button data-slide="17">18 · Métricas de avaliação</button>
+      <button data-slide="18">19 · Matriz de confusão (real)</button>
+    </div>
+    <div class="nav-group"><span class="nav-group-label">Resultados — Paulo Sérgio</span>
+      <button data-slide="19">20 · Resultados experimentais</button>
+      <button data-slide="20">21 · Mapa de classificação</button>
+      <button data-slide="21">22 · Análise dos erros</button>
+      <button data-slide="22">23 · Demonstração (interface)</button>
+      <button data-slide="23">24 · Aplicações, limitações e melhorias</button>
+      <button data-slide="24">25 · Conclusão e Referências</button>
+    </div>
+  </div>
+</nav>
+
+<button class="theme-toggle" id="theme-toggle" aria-label="Alternar tema" title="Tema claro/escuro (T)">
+  <span aria-hidden="true">◐</span><span id="theme-label">Light</span>
+</button>
+<button class="fullscreen-btn" id="fullscreen-btn" title="Tela cheia (F)" aria-label="Tela cheia">⛶</button>
+<button class="nav-btn nav-prev" id="prev-btn" title="Slide anterior (←)" aria-label="Slide anterior">‹</button>
+<button class="nav-btn nav-next" id="next-btn" title="Próximo slide (→)" aria-label="Próximo slide">›</button>
+<div class="keyboard-hint" id="keyboard-hint">← → slides · <span class="kbd">F</span> tela cheia · <span class="kbd">T</span> tema · <span class="kbd">M</span> menu · <span class="kbd">Home</span>/<span class="kbd">End</span></div>
+
+<main class="slides-container" id="slides-container">
+
+<!-- 1 CAPA -->
+<section class="slide slide-cover active" data-section="Capa" aria-hidden="false">
+  <div class="slide-content cover-content">
+    <div class="cover-grid">
+      <div class="cover-left">
+        <div class="cover-badge anim">Trabalho 10 · Processamento Digital de Imagens</div>
+        <h1 class="cover-title anim">Classificação de<br><span class="grad">Imagens de Satélite</span></h1>
+        <p class="cover-subtitle anim">Cobertura do solo com EuroSAT (Sentinel-2) e Random Forest</p>
+        <div class="cover-divider anim"></div>
+        <div class="cover-members anim">
+          <div class="member"><span class="member-num">1</span><span class="member-name">Ana Beatriz</span><span class="member-topic">Contextualização · sensoriamento · dados</span></div>
+          <div class="member"><span class="member-num">2</span><span class="member-name">Cindy Vitoria</span><span class="member-topic">Metodologia · pré-processamento · bandas</span></div>
+          <div class="member"><span class="member-num">3</span><span class="member-name">Eduardo Marinho</span><span class="member-topic">Características · índices · representação</span></div>
+          <div class="member"><span class="member-num">4</span><span class="member-name">Luis Jeronimo</span><span class="member-topic">Random Forest · treino · métricas</span></div>
+          <div class="member"><span class="member-num">5</span><span class="member-name">Paulo Sérgio</span><span class="member-topic">Resultados · mapa · demonstração</span></div>
+        </div>
+        <p class="cover-info anim">Disciplina de Processamento Digital de Imagens · Ciência da Computação</p>
+      </div>
+      <div class="cover-right anim">
+        <div class="cover-canvas-box">
+          <img src="../assets/images/sample_images.png" alt="Amostras EuroSAT" style="width:100%;height:100%;object-fit:cover;border-radius:12px;">
+          <div class="cover-caption">
+            <span class="cover-op">pixel → característica → classe</span>
+            <span class="cover-note">resultados reais do modelo</span>
+          </div>
+        </div>
+        <div class="cover-legend">
+          Modelo Random Forest treinado no EuroSAT RGB (5.000 amostras, 10 classes):
+          <strong>77,7% de acurácia</strong> no conjunto de teste, F1-macro 77,4%.
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-bg-pattern" aria-hidden="true"></div>
+</section>
+
+<!-- 2 Contextualização -->
+<section class="slide" data-section="Ana · Contexto" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-ana">2 · Ana Beatriz — Contextualização</span>
+      <h2>Por que classificar cobertura do solo? <small>mapas que orientam decisões territoriais</small></h2>
+    </div>
+    <div class="grid-1-2">
+      <div class="panel anim">
+        <ul class="topic-list small">
+          <li><strong>Cobertura do solo</strong> descreve o que existe na superfície (floresta, água, área urbana, agricultura).</li>
+          <li><strong>Sensoriamento remoto</strong> permite cobrir grandes áreas com imagens multiespectrais.</li>
+          <li><strong>Classificação supervisionada</strong> aprende padrões a partir de amostras rotuladas.</li>
+          <li><strong>Aplicações:</strong> desmatamento, agricultura de precisão, gestão hídrica, planejamento urbano.</li>
+          <li><strong>Objetivo do trabalho:</strong> pipeline completo do dado bruto ao mapa temático.</li>
+        </ul>
+        <div class="info-box small">EuroSAT: 27.000 imagens 64×64 px, 10 classes, sensor Sentinel-2 (MSI).</div>
+      </div>
+      <div class="panel anim">
+        <div class="canvas-wrap"><img src="../assets/images/class_distribution.png" alt="Distribuição de classes" style="width:100%;"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 Sensoriamento remoto -->
+<section class="slide" data-section="Ana · Sensoriamento" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-ana">3 · Ana Beatriz — Sensoriamento remoto</span>
+      <h2>O que é uma imagem de satélite? <small>grade de pixels com informação espectral</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Pixel:</strong> menor unidade da imagem, com valor de reflectância por banda.</li>
+          <li><strong>Banda espectral:</strong> intervalo de comprimento de onda capturado pelo sensor.</li>
+          <li><strong>Resolução espacial:</strong> tamanho do pixel no terreno (10 m no Sentinel-2).</li>
+          <li><strong>Resolução espectral:</strong> número e largura das bandas.</li>
+          <li><strong>Resolução temporal:</strong> frequência de revisita.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Sentinel-2 MSI:</strong> 13 bandas, de 443 nm (azul) a 2190 nm (SWIR).</li>
+          <li><strong>Bandas usadas na composição RGB:</strong> B4 (vermelho), B3 (verde), B2 (azul).</li>
+          <li><strong>NIR (B8):</strong> fundamental para vegetação e para NDVI/NDWI.</li>
+          <li><strong>INPE/BDC:</strong> integra dados Sentinel-2 ao Brazil Data Cube.</li>
+        </ul>
+        <div class="note-box small">EuroSAT usa exatamente o sensor MSI do Sentinel-2, o mesmo adotado pelo INPE.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 Fonte dos dados -->
+<section class="slide" data-section="Ana · Dados" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-ana">4 · Ana Beatriz — Fonte dos dados</span>
+      <h2>EuroSAT (Sentinel-2) via Zenodo <small>por que não INPE/CBERS diretamente?</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>INPE (dgi.inpe.br):</strong> exige cadastro manual e aprovação.</li>
+          <li><strong>CBERS:</strong> GeoTIFFs brutos (~GB por cena), sem rótulos.</li>
+          <li><strong>EuroSAT:</strong> 27.000 imagens 64×64 px, 13 bandas, 10 classes rotuladas.</li>
+          <li><strong>Acesso programático:</strong> download automático, sem interação humana.</li>
+          <li><strong>Benchmark científico:</strong> artigo publicado, citado no Brazil Data Cube.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <div class="info-box small">Justificativa didática: o INPE integra dados Sentinel-2 ao BDC; EuroSAT usa o mesmo sensor MSI. Escolha cientificamente sólida e equivalente.</div>
+        <ul class="topic-list small">
+          <li><strong>URL:</strong> zenodo.org/records/7711810</li>
+          <li><strong>Arquivo usado:</strong> EuroSAT_RGB.zip (~95 MB)</li>
+          <li><strong>Classes:</strong> 10 coberturas de solo.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 Área de estudo e classes -->
+<section class="slide" data-section="Ana · Classes" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-ana">5 · Ana Beatriz — Área de estudo e classes</span>
+      <h2>Mapeamento EuroSAT → nomenclatura do trabalho <small>10 classes originais + 5 macro-classes</small></h2>
+    </div>
+    <div class="panel anim">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Classe EuroSAT</th><th>Categoria do trabalho</th></tr></thead>
+          <tbody>
+            <tr><td>Forest, HerbaceousVegetation, Pasture</td><td>Vegetação</td></tr>
+            <tr><td>SeaLake, River</td><td>Água</td></tr>
+            <tr><td>Residential, Industrial</td><td>Área urbana</td></tr>
+            <tr><td>AnnualCrop, PermanentCrop</td><td>Área agrícola</td></tr>
+            <tr><td>Highway</td><td>Agrupado com urbano (ou excluído)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note-box small">Treinamos com as 10 classes originais e avaliamos também o agrupamento em macro-classes.</div>
+    </div>
+  </div>
+</section>
+
+<!-- 6 Classes de cobertura -->
+<section class="slide" data-section="Ana · Cobertura" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-ana">6 · Ana Beatriz — Classes de cobertura</span>
+      <h2>As 10 classes do EuroSAT <small>amostras reais do dataset</small></h2>
+    </div>
+    <div class="panel anim">
+      <img src="../assets/images/sample_images.png" alt="Amostras por classe" style="width:100%;max-height:60vh;object-fit:contain;">
+    </div>
+  </div>
+</section>
+
+<!-- 7 Metodologia pipeline -->
+<section class="slide" data-section="Cindy · Metodologia" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-cindy">7 · Cindy Vitoria — Metodologia</span>
+      <h2>Pipeline de classificação <small>do dado bruto ao mapa temático</small></h2>
+    </div>
+    <div class="grid-pipeline anim">
+      <div class="pipe-stage"><span class="pipe-num">1</span><strong>Download</strong><span class="pipe-meta">EuroSAT RGB</span></div>
+      <div class="pipe-stage"><span class="pipe-num">2</span><strong>Pré-processamento</strong><span class="pipe-meta">normalização</span></div>
+      <div class="pipe-stage"><span class="pipe-num">3</span><strong>Features</strong><span class="pipe-meta">estatísticas + índices</span></div>
+      <div class="pipe-stage"><span class="pipe-num">4</span><strong>Treino</strong><span class="pipe-meta">Random Forest</span></div>
+      <div class="pipe-stage"><span class="pipe-num">5</span><strong>Avaliação</strong><span class="pipe-meta">métricas</span></div>
+      <div class="pipe-stage"><span class="pipe-num">6</span><strong>Mapa</strong><span class="pipe-meta">classificação</span></div>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Backend:</strong> Flask API em Python.</li>
+          <li><strong>Modelo:</strong> RandomForestClassifier (scikit-learn).</li>
+          <li><strong>Features:</strong> ~63 características por imagem.</li>
+          <li><strong>Saída:</strong> classe + probabilidades.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Treino/val/teste:</strong> 70/15/15 estratificado.</li>
+          <li><strong>Amostras:</strong> 5.000 (500 por classe).</li>
+          <li><strong>Árvores:</strong> 200, max_features=sqrt.</li>
+          <li><strong>OOB score:</strong> 0,7823.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 8 Pré-processamento -->
+<section class="slide" data-section="Cindy · Pré-process." aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-cindy">8 · Cindy Vitoria — Pré-processamento</span>
+      <h2>Normalização e limpeza <small>reflectância → [0, 1]</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Conversão:</strong> uint8 → float32 / 255.</li>
+          <li><strong>Valores inválidos:</strong> NaN/inf → mediana do canal; negativos → 0.</li>
+          <li><strong>Saturação:</strong> clip em [0, 1].</li>
+          <li><strong>Normalização min-max:</strong> por canal.</li>
+          <li><strong>Filtro gaussiano:</strong> disponível para imagens brutas.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/spectral_signatures.png" alt="Assinaturas espectrais" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 Bandas espectrais -->
+<section class="slide" data-section="Cindy · Bandas" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-cindy">9 · Cindy Vitoria — Bandas espectrais</span>
+      <h2>Bandas do Sentinel-2 no EuroSAT RGB <small>Red, Green, Blue</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Canal 0:</strong> Red ≈ B4 (665 nm).</li>
+          <li><strong>Canal 1:</strong> Green ≈ B3 (560 nm).</li>
+          <li><strong>Canal 2:</strong> Blue ≈ B2 (490 nm).</li>
+          <li><strong>NIR (B8):</strong> não disponível no EuroSAT RGB; aproximamos índices.</li>
+          <li><strong>Assinaturas espectrais:</strong> média por canal distingue classes.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/ndvi_distributions.png" alt="NDVI" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 10 Composição colorida -->
+<section class="slide" data-section="Cindy · Composição" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-cindy">10 · Cindy Vitoria — Composição colorida</span>
+      <h2>Composição RGB natural <small>B4, B3, B2</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>RGB verdadeiro:</strong> Red=B4, Green=B3, Blue=B2.</li>
+          <li><strong>Falsa cor NIR:</strong> R=B8, G=B4, B=B3 (requer multiespectral).</li>
+          <li><strong>Visualização:</strong> facilita interpretação humana.</li>
+          <li><strong>Classificador:</strong> usa features numéricas, não a imagem.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/sample_images.png" alt="Composição" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 11 Preparação das amostras -->
+<section class="slide" data-section="Cindy · Amostras" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-cindy">11 · Cindy Vitoria — Preparação das amostras</span>
+      <h2>Amostragem e divisão <small>500 imagens por classe</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>5.000 imagens:</strong> 500 por classe.</li>
+          <li><strong>Divisão estratificada:</strong> 70% treino, 15% validação, 15% teste.</li>
+          <li><strong>Treino:</strong> 3.500 amostras.</li>
+          <li><strong>Validação:</strong> 750 amostras.</li>
+          <li><strong>Teste:</strong> 750 amostras.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/class_distribution.png" alt="Distribuição" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 12 Extração de características -->
+<section class="slide" data-section="Eduardo · Extração" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-edu">12 · Eduardo Marinho — Extração de características</span>
+      <h2>Vetor de características <small>~63 dimensões por imagem</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Estatísticas espectrais:</strong> média, desvio, min, max, mediana por canal (15).</li>
+          <li><strong>Histograma:</strong> 8 bins × 3 canais (24).</li>
+          <li><strong>Índices:</strong> NDVI/NDWI/brilho/RI → 5 estatísticas cada (20).</li>
+          <li><strong>Textura:</strong> variância local (4).</li>
+          <li><strong>Total:</strong> 63 características.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/feature_importance.png" alt="Importância de features" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 13 Índices espectrais -->
+<section class="slide" data-section="Eduardo · Índices" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-edu">13 · Eduardo Marinho — Índices espectrais</span>
+      <h2>NDVI e NDWI aproximados <small>proxy no domínio RGB</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>NDVI original:</strong> (NIR - Red)/(NIR + Red).</li>
+          <li><strong>Aproximação RGB:</strong> (Green - Red)/(Green + Red + ε).</li>
+          <li><strong>NDWI original:</strong> (Green - NIR)/(Green + NIR).</li>
+          <li><strong>Aproximação RGB:</strong> (Blue - Red)/(Blue + Red + ε).</li>
+          <li><strong>Uso:</strong> estatísticas dos mapas viram features.</li>
+        </ul>
+        <div class="formula-box small">NDVI ≈ (G - R)/(G + R + ε)</div>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/ndvi_distributions.png" alt="NDVI" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 14 Histogramas e estatísticas -->
+<section class="slide" data-section="Eduardo · Histogramas" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-edu">14 · Eduardo Marinho — Histogramas e estatísticas</span>
+      <h2>Distribuição espectral <small>histogramas por canal</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Média:</strong> nível de reflectância.</li>
+          <li><strong>Desvio padrão:</strong> variabilidade espectral.</li>
+          <li><strong>Mín/Máx:</strong> extremos de intensidade.</li>
+          <li><strong>Mediana:</strong> robustez a outliers.</li>
+          <li><strong>Histograma:</strong> forma da distribuição.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/spectral_signatures.png" alt="Assinaturas" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 15 Representação numérica -->
+<section class="slide" data-section="Eduardo · Representação" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-edu">15 · Eduardo Marinho — Representação numérica</span>
+      <h2>Da imagem ao vetor <small>representação numérica</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Imagem:</strong> 64×64×3 = 12.288 valores.</li>
+          <li><strong>Vetor:</strong> 63 características compactas.</li>
+          <li><strong>Espaço de características:</strong> cada imagem = ponto.</li>
+          <li><strong>Classificador:</strong> encontra fronteiras no espaço.</li>
+        </ul>
+        <div class="note-box small">Redução de dimensionalidade implícita via estatísticas.</div>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/confusion_matrix.png" alt="Matriz" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 16 Random Forest -->
+<section class="slide" data-section="Luis · RF" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-luis">16 · Luis Jeronimo — Algoritmo: Random Forest</span>
+      <h2>Random Forest <small>ensemble de árvores de decisão</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Árvore de decisão:</strong> splits por limiar de feature.</li>
+          <li><strong>Bagging:</strong> amostras bootstrap.</li>
+          <li><strong>Random features:</strong> sqrt(d) por split.</li>
+          <li><strong>Votação:</strong> maioria das árvores.</li>
+          <li><strong>Vantagens:</strong> robusto, sem GPU, interpretável.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Parâmetros:</strong> n_estimators=200, min_samples_leaf=2.</li>
+          <li><strong>class_weight:</strong> balanced.</li>
+          <li><strong>max_features:</strong> sqrt.</li>
+          <li><strong>OOB score:</strong> 0,7823.</li>
+        </ul>
+        <div class="info-box small">Fácil de explicar no seminário (ensembles de árvores).</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 17 Treinamento e teste -->
+<section class="slide" data-section="Luis · Treino" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-luis">17 · Luis Jeronimo — Treinamento e teste</span>
+      <h2>Treino, validação e teste <small>avaliação honesta</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Treino:</strong> 3.500 amostras (ajuste).</li>
+          <li><strong>Validação:</strong> 750 (ajuste de hiperparâmetros).</li>
+          <li><strong>Teste:</strong> 750 (avaliação final).</li>
+          <li><strong>Estratificação:</strong> proporção de classes mantida.</li>
+          <li><strong>Tempo de treino:</strong> ~1 min em CPU.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/metrics_by_class.png" alt="Métricas por classe" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 18 Métricas -->
+<section class="slide" data-section="Luis · Métricas" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-luis">18 · Luis Jeronimo — Métricas de avaliação</span>
+      <h2>Métricas <small>acurácia, precisão, recall, F1</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Acurácia:</strong> 77,7% (teste).</li>
+          <li><strong>F1-macro:</strong> 77,4%.</li>
+          <li><strong>F1-weighted:</strong> 77,4%.</li>
+          <li><strong>Precisão macro:</strong> 75,7%.</li>
+          <li><strong>Recall macro:</strong> 77,7%.</li>
+        </ul>
+        <div class="note-box small">Highway é a classe mais difícil (F1 0,40).</div>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/confusion_matrix.png" alt="Matriz" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 19 Matriz de confusão -->
+<section class="slide" data-section="Luis · Confusão" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-luis">19 · Luis Jeronimo — Matriz de confusão (real)</span>
+      <h2>Matriz de confusão <small>erros por par de classes</small></h2>
+    </div>
+    <div class="panel anim">
+      <img src="../assets/images/confusion_matrix_counts.png" alt="Matriz contagens" style="width:100%;max-height:62vh;object-fit:contain;">
+    </div>
+  </div>
+</section>
+
+<!-- 20 Resultados experimentais -->
+<section class="slide" data-section="Paulo · Resultados" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">20 · Paulo Sérgio — Resultados experimentais</span>
+      <h2>Resultados <small>desempenho por classe</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Classe</th><th>Precisão</th><th>Recall</th><th>F1</th></tr></thead>
+            <tbody>
+              <tr><td>AnnualCrop</td><td>0,88</td><td>0,80</td><td>0,84</td></tr>
+              <tr><td>Forest</td><td>0,91</td><td>0,89</td><td>0,90</td></tr>
+              <tr><td>HerbaceousVegetation</td><td>0,77</td><td>0,68</td><td>0,72</td></tr>
+              <tr><td>Highway</td><td>0,49</td><td>0,40</td><td>0,44</td></tr>
+              <tr><td>Industrial</td><td>0,82</td><td>0,91</td><td>0,86</td></tr>
+              <tr><td>Pasture</td><td>0,72</td><td>0,91</td><td>0,80</td></tr>
+              <tr><td>PermanentCrop</td><td>0,82</td><td>0,67</td><td>0,74</td></tr>
+              <tr><td>Residential</td><td>0,82</td><td>0,89</td><td>0,85</td></tr>
+              <tr><td>River</td><td>0,63</td><td>0,75</td><td>0,68</td></tr>
+              <tr><td>SeaLake</td><td>0,93</td><td>0,88</td><td>0,90</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/classification_grid.png" alt="Grade" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 21 Mapa de classificação -->
+<section class="slide" data-section="Paulo · Mapa" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">21 · Paulo Sérgio — Mapa de classificação</span>
+      <h2>Mapa temático <small>classificação de uma cena</small></h2>
+    </div>
+    <div class="panel anim">
+      <img src="../assets/images/thematic_map.png" alt="Mapa temático" style="width:100%;max-height:62vh;object-fit:contain;">
+    </div>
+  </div>
+</section>
+
+<!-- 22 Análise dos erros -->
+<section class="slide" data-section="Paulo · Erros" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">22 · Paulo Sérgio — Análise dos erros</span>
+      <h2>Onde o modelo erra? <small>confusões entre classes similares</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <img src="../assets/images/error_analysis.png" alt="Erros" style="width:100%;">
+      </div>
+      <div class="panel">
+        <img src="../assets/images/confidence_distribution.png" alt="Confiança" style="width:100%;">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 23 Demonstração -->
+<section class="slide" data-section="Paulo · Demo" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">23 · Paulo Sérgio — Demonstração (interface)</span>
+      <h2>Interface web <small>Flask + classificação em tempo real</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel" style="height:60vh;">
+        <iframe src="http://localhost:5000" style="width:100%;height:100%;border:0;border-radius:12px;" title="Interface"></iframe>
+      </div>
+      <div class="panel">
+        <img src="../assets/images/thematic_map.png" alt="Mapa temático" style="width:100%;">
+        <div class="note-box small" style="margin-top:8px;">Se o Flask não estiver rodando, execute <code>python src/app.py</code> e acesse <code>http://localhost:5000</code>.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 24 Aplicações, limitações e melhorias -->
+<section class="slide" data-section="Paulo · Aplicações" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">24 · Paulo Sérgio — Aplicações, limitações e melhorias</span>
+      <h2>Aplicações e limitações <small>próximos passos</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Aplicações:</strong> mapeamento de uso do solo, monitoramento de desmatamento, agricultura.</li>
+          <li><strong>Limitações:</strong> RGB sem NIR, classes ambíguas, domínio europeu.</li>
+          <li><strong>Melhorias:</strong> usar 13 bandas, CNNs, mais dados brasileiros.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Escalabilidade:</strong> processar cenas completas.</li>
+          <li><strong>Tempo real:</strong> otimizar inferência.</li>
+          <li><strong>Explicabilidade:</strong> importância de features.</li>
+        </ul>
+        <div class="info-box small">EuroSAT é benchmark; adaptação ao Brasil é trabalho futuro.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 25 Conclusão e referências -->
+<section class="slide" data-section="Paulo · Conclusão" aria-hidden="true">
+  <div class="slide-content">
+    <div class="slide-header anim">
+      <span class="slide-tag tag-paulo">25 · Paulo Sérgio — Conclusão e Referências</span>
+      <h2>Conclusão <small>pipeline completo de classificação</small></h2>
+    </div>
+    <div class="grid-2 anim">
+      <div class="panel">
+        <ul class="topic-list small">
+          <li><strong>Pipeline:</strong> download → pré-processamento → features → treino → avaliação → mapa.</li>
+          <li><strong>Modelo:</strong> Random Forest, 77,7% de acurácia.</li>
+          <li><strong>Interface:</strong> Flask API + web.</li>
+          <li><strong>Documentação:</strong> metodologia e guias por integrante.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <ul class="topic-list small">
+          <li>Helber et al. (2019) EuroSAT.</li>
+          <li>Scikit-learn documentation.</li>
+          <li>Sentinel-2 MSI (ESA).</li>
+          <li>INPE Brazil Data Cube.</li>
+        </ul>
+        <div class="note-box small">Obrigado pela atenção.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script src="../js/slides.js"></script>
+</body>
+</html>

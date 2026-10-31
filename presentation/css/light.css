@@ -1,0 +1,64 @@
+/* ============================================================
+   light.css — default theme for projection
+   ============================================================ */
+body.light, body:not(.dark) {
+  --bg: #f5f7fb;
+  --card-bg: #ffffff;
+  --chrome-bg: rgba(255, 255, 255, .92);
+  --canvas-bg: #eef2f8;
+  --canvas-border: #d9e1ec;
+  --border: #e2e8f0;
+  --hover-bg: #f1f5f9;
+  --tag-bg: #f3f6fa;
+  --note-bg: #f8fafc;
+  --info-bg: #eff5ff;
+  --progress-bg: #e2e8f0;
+
+  --text-primary: #0f172a;
+  --text-secondary: #46556c;
+  --text-tertiary: #8393a9;
+
+  --accent: #2563eb;
+  --accent-bg: #eff5ff;
+  --accent-ring: rgba(37, 99, 235, .22);
+
+  --c-ana: #2563eb;
+  --c-cindy: #059669;
+  --c-edu: #d97706;
+  --c-luis: #7c3aed;
+  --c-paulo: #e11d48;
+  --c-ok: #059669;
+  --c-warn: #dc2626;
+  --ok-bg: #ecfdf5;
+  --warn-bg: #fff1f2;
+
+  --tag-ana-bg: #eff6ff; --tag-ana-fg: #1d4ed8;
+  --tag-cindy-bg: #ecfdf5; --tag-cindy-fg: #047857;
+  --tag-edu-bg: #fffbeb; --tag-edu-fg: #b45309;
+  --tag-luis-bg: #f5f3ff; --tag-luis-fg: #6d28d9;
+  --tag-paulo-bg: #fff1f2; --tag-paulo-fg: #be123c;
+  --tag-geral-bg: #f1f5f9; --tag-geral-fg: #475569;
+
+  --cover-a: #f8fafc;
+  --cover-b: #e8f1ff;
+  --cover-c: #f3e8ff;
+  --pat-1: rgba(37, 99, 235, .09);
+  --pat-2: rgba(124, 58, 237, .09);
+  --pat-grid: rgba(15, 23, 42, .035);
+
+  /* class colours used by the charts */
+  --k0: #16a34a;
+  --k1: #e11d48;
+  --k2: #2563eb;
+  --k3: #7c3aed;
+}
+
+body.light { background: var(--bg); color: var(--text-primary); }
+body.light ::selection { background: rgba(37, 99, 235, .18); }
+body.light .panel,
+body.light .stage-card,
+body.light .member,
+body.light .cover-canvas-box,
+body.light .concept-card,
+body.light .app-card,
+body.light .risk-card { box-shadow: 0 1px 3px rgba(15, 23, 42, .05), 0 3px 12px rgba(15, 23, 42, .04); }

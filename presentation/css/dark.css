@@ -1,0 +1,95 @@
+/* ============================================================
+   dark.css — tema escuro
+   ------------------------------------------------------------
+   Usado em projeção com pouca luz. Mantém os mesmos nomes de
+   variáveis do tema claro; só a paleta muda. As cores de classe
+   (--k0..--k3) são mais claras para continuarem legíveis sobre
+   o fundo escuro.
+   ============================================================ */
+body.dark {
+  /* superfícies */
+  --bg: #0a111d;
+  --card-bg: #121c2e;
+  --chrome-bg: rgba(18, 28, 46, .92);
+  --canvas-bg: #0d1626;
+  --canvas-border: #26344c;
+  --border: #233047;
+  --hover-bg: #1a2740;
+  --tag-bg: #16223a;
+  --note-bg: #101a2c;
+  --info-bg: #122440;
+  --progress-bg: #1b2840;
+
+  /* tipografia */
+  --text-primary: #e9eff9;
+  --text-secondary: #aab8ce;
+  --text-tertiary: #74859f;
+
+  /* destaque */
+  --accent: #60a5fa;
+  --accent-bg: #142747;
+  --accent-ring: rgba(96, 165, 250, .3);
+
+  /* integrantes e semântica */
+  --c-ana: #60a5fa;
+  --c-cindy: #34d399;
+  --c-edu: #fbbf24;
+  --c-luis: #a78bfa;
+  --c-paulo: #fb7185;
+  --c-ok: #34d399;
+  --c-warn: #fb7185;
+  --ok-bg: #0c2a22;
+  --warn-bg: #2b1520;
+
+  /* etiquetas */
+  --tag-ana-bg: #12233f; --tag-ana-fg: #7fb3ff;
+  --tag-cindy-bg: #0e2a24; --tag-cindy-fg: #4ddba9;
+  --tag-edu-bg: #2b2010; --tag-edu-fg: #f2c04c;
+  --tag-luis-bg: #221a3d; --tag-luis-fg: #b9a8ff;
+  --tag-paulo-bg: #2c1421; --tag-paulo-fg: #ff96a6;
+  --tag-geral-bg: #1a2439; --tag-geral-fg: #a9b7ce;
+
+  /* capa e padrões */
+  --cover-a: #0b1424;
+  --cover-b: #0f1e3a;
+  --cover-c: #1a1440;
+  --pat-1: rgba(96, 165, 250, .1);
+  --pat-2: rgba(167, 139, 250, .1);
+  --pat-grid: rgba(148, 163, 184, .06);
+
+  /* classes dos gráficos */
+  --k0: #4ade80;
+  --k1: #fb7185;
+  --k2: #60a5fa;
+  --k3: #a78bfa;
+}
+
+body.dark { background: var(--bg); color: var(--text-primary); }
+body.dark ::selection { background: rgba(96, 165, 250, .28); }
+
+body.dark .panel,
+body.dark .stage-card,
+body.dark .member,
+body.dark .cover-canvas-box,
+body.dark .concept-card,
+body.dark .app-card,
+body.dark .risk-card {
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .34), 0 8px 24px rgba(0, 0, 0, .26);
+}
+
+body.dark .nav-items,
+body.dark .nav-toggle,
+body.dark .theme-toggle,
+body.dark .fullscreen-btn,
+body.dark .nav-btn,
+body.dark .slide-counter,
+body.dark .section-indicator,
+body.dark .keyboard-hint { border-color: var(--border); }
+
+body.dark .slide-bg-pattern { opacity: .75; }
+
+body.dark .data-table th { color: var(--text-tertiary); }
+body.dark .formula-box { background: var(--tag-bg); }
+body.dark .matrix-cell { background: var(--tag-bg); }
+body.dark .matrix-cell .num-input { background: var(--card-bg); }
+body.dark .split-bar { border-color: var(--border); }

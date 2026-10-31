@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Classificador de Cobertura do Solo — Trabalho 10</title>
+<style>
+  :root { --bg:#f5f7fb; --card:#fff; --border:#e2e8f0; --text:#0f172a; --muted:#46556c; --accent:#2563eb; }
+  body.dark { --bg:#0a111d; --card:#121c2e; --border:#233047; --text:#e9eff9; --muted:#aab8ce; --accent:#60a5fa; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:Inter,system-ui,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+  header { padding:20px 24px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; }
+  header h1 { font-size:20px; }
+  .tabs { display:flex; gap:8px; padding:16px 24px; }
+  .tab { padding:8px 16px; border:1px solid var(--border); border-radius:8px; background:var(--card); cursor:pointer; }
+  .tab.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .container { padding:0 24px 24px; max-width:1200px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+  .card h2 { font-size:16px; margin-bottom:12px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  button { padding:8px 14px; border-radius:8px; border:1px solid var(--border); background:var(--card); cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  input[type=file] { padding:6px; }
+  select { padding:8px; border-radius:8px; border:1px solid var(--border); background:var(--card); color:var(--text); }
+  img.preview { width:100%; max-width:256px; border-radius:8px; border:1px solid var(--border); }
+  .bar { height:18px; border-radius:6px; margin:4px 0; display:flex; align-items:center; padding-left:8px; color:#fff; font-size:12px; }
+  .result { margin-top:12px; }
+  .badge { display:inline-block; padding:4px 10px; border-radius:999px; color:#fff; font-weight:600; }
+  .metrics table { width:100%; border-collapse:collapse; }
+  .metrics th,.metrics td { padding:6px; border-bottom:1px solid var(--border); text-align:left; font-size:13px; }
+  .hidden { display:none; }
+  .map img { width:100%; border-radius:8px; }
+  .prob-row { display:flex; align-items:center; gap:8px; margin:4px 0; }
+  .prob-label { width:140px; font-size:12px; }
+  .prob-bar-wrap { flex:1; background:#e2e8f0; border-radius:6px; overflow:hidden; height:18px; }
+  .prob-bar { height:100%; }
+  .prob-val { width:50px; text-align:right; font-size:12px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<header>
+  <h1>🛰️ Classificador de Cobertura do Solo</h1>
+  <button id="themeBtn">Tema</button>
+</header>
+<div class="tabs">
+  <button class="tab active" data-tab="classify">Classificar</button>
+  <button class="tab" data-tab="metrics">Métricas</button>
+  <button class="tab" data-tab="map">Mapa</button>
+  <button class="tab" data-tab="samples">Amostras</button>
+</div>
+<div class="container">
+  <div id="tab-classify">
+    <div class="grid">
+      <div class="card">
+        <h2>Entrada</h2>
+        <div class="row">
+          <input type="file" id="fileInput" accept="image/*">
+          <button class="primary" id="btnClassify">Classificar</button>
+        </div>
+        <div class="row" style="margin-top:12px;">
+          <select id="classSelect"></select>
+          <select id="sampleSelect"></select>
+          <button id="btnSample">Classificar amostra</button>
+        </div>
+        <div style="margin-top:12px;">
+          <img id="preview" class="preview" src="" alt="preview" style="display:none;">
+        </div>
+      </div>
+      <div class="card">
+        <h2>Resultado</h2>
+        <div id="result" class="result">Nenhuma classificação ainda.</div>
+        <canvas id="probChart" style="margin-top:12px;max-height:220px;"></canvas>
+      </div>
+      <div class="card">
+        <h2>Histórico</h2>
+        <div id="history" style="font-size:13px;"></div>
+        <button id="clearHistory" style="margin-top:8px;">Limpar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-metrics" class="hidden">
+    <div class="card metrics">
+      <h2>Métricas do Modelo</h2>
+      <div id="metricsContent">Carregando...</div>
+      <div style="margin-top:12px;"><img id="cmImg" style="width:100%;max-width:600px;" src="/api/figures/confusion_matrix.png" alt="Matriz de confusão"></div>
+    </div>
+  </div>
+
+  <div id="tab-map" class="hidden">
+    <div class="card map">
+      <h2>Mapa Temático</h2>
+      <img src="/api/figures/predictions/thematic_map.png" alt="Mapa temático">
+    </div>
+  </div>
+
+  <div id="tab-samples" class="hidden">
+    <div class="card">
+      <h2>Amostras por classe</h2>
+      <div id="samplesGrid"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+function $(id){return document.getElementById(id);}
+function showTab(name){
+  ['classify','metrics','map','samples'].forEach(t=>{
+    $('tab-'+t).classList.toggle('hidden', t!==name);
+  });
+  document.querySelectorAll('.tab').forEach(b=>{
+    b.classList.toggle('active', b.dataset.tab===name);
+  });
+  if(name==='metrics') loadMetrics();
+  if(name==='samples') loadSamples();
+}
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>showTab(b.dataset.tab)));
+
+// theme
+const themeBtn=$('themeBtn');
+themeBtn.addEventListener('click',()=>document.body.classList.toggle('dark'));
+let saved=localStorage.getItem('trab10-theme');
+if(saved==='dark') document.body.classList.add('dark');
+
+// classes
+async function loadClasses(){
+  const r=await fetch('/api/classes'); const d=await r.json();
+  const sel=$('classSelect'); sel.innerHTML='';
+  d.classes.forEach(c=>{
+    const o=document.createElement('option'); o.value=c.name; o.textContent=c.name; sel.appendChild(o);
+  });
+}
+loadClasses();
+
+// preview
+$('fileInput').addEventListener('change',e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const url=URL.createObjectURL(f);
+  const img=$('preview'); img.src=url; img.style.display='block';
+});
+
+async function classifyBytes(formData){
+  const r=await fetch('/api/classify',{method:'POST',body:formData});
+  return r.json();
+}
+
+$('btnClassify').addEventListener('click',async()=>{
+  const f=$('fileInput').files[0]; if(!f){ alert('Selecione um arquivo'); return; }
+  const fd=new FormData(); fd.append('file',f);
+  const res=await classifyBytes(fd);
+  renderResult(res);
+});
+
+$('btnSample').addEventListener('click',async()=>{
+  const cls=$('classSelect').value;
+  const idx=$('sampleSelect').value||0;
+  const r=await fetch(`/api/classify_sample/${cls}/${idx}`);
+  const res=await r.json();
+  renderResult(res,true,cls);
+});
+
+function renderResult(res,isSample=false,trueCls=null){
+  if(res.error){ $('result').innerHTML='<p style="color:red">'+res.error+'</p>'; return; }
+  const color=res.color||'#95A5A6';
+  let html=`<div><span class="badge" style="background:${color}">${res.class_name}</span>`;
+  html+=` <span style="margin-left:8px;color:var(--muted)">${res.macro_class}</span></div>`;
+  if(isSample){ html+=`<p style="margin-top:8px;font-size:13px;">Real: ${trueCls} — ${res.is_correct?'✓ correto':'✗ erro'}</p>`; }
+  html+=`<div style="margin-top:12px;">`;
+  const probs=res.probabilities||{};
+  const entries=Object.entries(probs).sort((a,b)=>b[1]-a[1]);
+  entries.forEach(([k,v])=>{
+    html+=`<div class="prob-row"><div class="prob-label">${k}</div><div class="prob-bar-wrap"><div class="prob-bar" style="width:${(v*100).toFixed(1)}%;background:${colorFor(k)}"></div></div><div class="prob-val">${(v*100).toFixed(1)}%</div></div>`;
+  });
+  html+=`</div>`;
+  if(res.image_b64){ html+=`<div style="margin-top:12px;"><img src="data:image/png;base64,${res.image_b64}" style="width:128px;border-radius:8px;"></div>`; }
+  $('result').innerHTML=html;
+
+  // Chart
+  const probs=res.probabilities||{};
+  const labels=Object.keys(probs);
+  const values=Object.values(probs).map(v=>(v*100));
+  if(window.probChartInstance){ window.probChartInstance.destroy(); }
+  const ctx=$('probChart').getContext('2d');
+  window.probChartInstance=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'Probabilidade (%)',data:values,backgroundColor:labels.map(colorFor)}]},options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,max:100}}}});
+
+  // History
+  const hist=JSON.parse(localStorage.getItem('trab10-history')||'[]');
+  hist.unshift({cls:res.class_name,macro:res.macro_class,time:new Date().toLocaleTimeString()});
+  localStorage.setItem('trab10-history',JSON.stringify(hist.slice(0,10)));
+  renderHistory();
+}
+
+function renderHistory(){
+  const hist=JSON.parse(localStorage.getItem('trab10-history')||'[]');
+  $('history').innerHTML=hist.map(h=>`<div>${h.time} — <strong>${h.cls}</strong> (${h.macro})</div>`).join('')||'Sem histórico.';
+}
+renderHistory();
+$('clearHistory').addEventListener('click',()=>{localStorage.removeItem('trab10-history');renderHistory();});
+
+function colorFor(cls){
+  const map={'AnnualCrop':'#F4D03F','Forest':'#1E8449','HerbaceousVegetation':'#58D68D','Highway':'#808B96','Industrial':'#E74C3C','Pasture':'#A9DFBF','PermanentCrop':'#F0B27A','Residential':'#AF7AC5','River':'#3498DB','SeaLake':'#1A5276'};
+  return map[cls]||'#95A5A6';
+}
+
+// sample select indices
+$('classSelect').addEventListener('change',()=>{
+  const s=$('sampleSelect'); s.innerHTML='';
+  for(let i=0;i<5;i++){ const o=document.createElement('option'); o.value=i; o.textContent='Amostra '+(i+1); s.appendChild(o);}
+});
+$('classSelect').dispatchEvent(new Event('change'));
+
+async function loadMetrics(){
+  const r=await fetch('/api/metrics'); const d=await r.json();
+  if(d.error){ $('metricsContent').innerHTML=d.error; return; }
+  let html=`<p><strong>Modelo:</strong> ${d.model} | <strong>Acurácia teste:</strong> ${(d.test_accuracy*100).toFixed(1)}% | <strong>F1 macro:</strong> ${(d.macro_avg_f1*100).toFixed(1)}%</p>`;
+  html+=`<table><thead><tr><th>Classe</th><th>Precisão</th><th>Recall</th><th>F1</th><th>N</th></tr></thead><tbody>`;
+  Object.entries(d.per_class).forEach(([cls,m])=>{
+    html+=`<tr><td>${cls}</td><td>${(m.precision*100).toFixed(1)}%</td><td>${(m.recall*100).toFixed(1)}%</td><td>${(m.f1*100).toFixed(1)}%</td><td>${m.support}</td></tr>`;
+  });
+  html+=`</tbody></table>`;
+  $('metricsContent').innerHTML=html;
+}
+
+async function loadSamples(){
+  const r=await fetch('/api/samples?n_per_class=3'); const d=await r.json();
+  let html='';
+  Object.entries(d).forEach(([cls,v])=>{
+    html+=`<div style="margin-bottom:12px;"><strong>${cls}</strong><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">`;
+    v.images.forEach(im=>{ html+=`<img src="data:image/png;base64,${im.b64}" style="width:64px;height:64px;border-radius:6px;">`; });
+    html+=`</div></div>`;
+  });
+  $('samplesGrid').innerHTML=html;
+}
+</script>
+</body>
+</html>
