@@ -109,6 +109,8 @@ Com Docker: `docker compose up --build`, depois de gerar `data/`, `models/` e `r
 
 ## Apresentação
 
+**Online:** <https://sonda11.github.io/trabalho-10-IPDI/> (publicada pelo GitHub Pages a cada push em `presentation/`).
+
 Abra `presentation/index.html` no navegador (funciona por `file://`, sem servidor e sem
 internet). Teclas: `→`/`espaço` avança, `←` volta, `S` abre a visão do apresentador
 (notas e cronômetro), `F` tela cheia, `Esc` visão geral e `T` alterna o tema claro/escuro
