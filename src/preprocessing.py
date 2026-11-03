@@ -1,318 +1,202 @@
 """
-preprocessing.py — Pré-processamento de imagens de satélite
+preprocessing.py — Etapa 3: pré-processamento.
 
-Etapas implementadas:
-  1. Normalização min-max por banda (reflectância → [0, 1])
-  2. Tratamento de valores inválidos (NaN, negativos, saturados)
-  3. Composição RGB (bandas espectrais → imagem visível)
-  4. Redução de ruído (filtro gaussiano)
-  5. Alinhamento espacial (redimensionamento para tamanho padrão)
+Cada operação existe por um motivo concreto destes dados:
 
-No EuroSAT RGB, as imagens já são fornecidas como JPEG 8-bit (0–255).
-O pré-processamento normaliza para [0,1] e extrai canais individuais.
+* `to_reflectance`      números digitais → reflectância [0, ~1]. O L1C recente
+                         soma 1000 aos DN (baseline ≥ 04.00); o EuroSAT, não.
+                         Sem harmonizar, o modelo treinado no EuroSAT veria toda
+                         cena nova ~0,1 mais clara em todas as bandas.
+* `valid_mask`          pixels sem dado (borda da cena), saturados ou com nuvem
+                         (máscara CMASK do INPE no CBERS) ficam de fora.
+* `fix_invalid`         NaN/inf e valores fora da faixa física → tratados antes
+                         de calcular índices (evita divisões inválidas).
+* `stretch`             realce por percentis (2–98 %) só para *visualização*:
+                         a reflectância bruta é escura demais para a tela.
+* `composite`           composições coloridas: cor verdadeira, falsa cor (NIR)
+                         e SWIR (destaca solo exposto e área urbana).
+* `denoise_median`      filtro de mediana opcional (ruído impulsivo).
+* `majority_filter`     pós-classificação: remove pixels isolados ("sal e pimenta")
+                         do mapa, trocando cada rótulo pela moda da vizinhança.
+
+O alinhamento espacial das bandas (20 m e 60 m → 10 m) é feito na leitura,
+em `data_loader.prepare_s2_scene`, por reamostragem bilinear para uma grade única.
 """
 
-import numpy as np
-from scipy.ndimage import gaussian_filter
-from PIL import Image
+from __future__ import annotations
+
+import sys
 from pathlib import Path
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+
+import numpy as np
+from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import config as C  # noqa: E402
+
+
+# ─── Radiometria ──────────────────────────────────────────────────────────────
+
+def to_reflectance(dn: np.ndarray, sensor: str, offset: float | None = None) -> np.ndarray:
+    """Converte números digitais em reflectância (float32).
+
+    sentinel2 (EuroSAT, baseline antiga): ρ = DN / 10000
+    sentinel2 (L1C baseline ≥ 04.00):     ρ = (DN + offset) / 10000, offset = −1000
+    cbers4_mux (L4 SR do INPE):           ρ = DN × 1e-4
+    """
+    x = dn.astype(np.float32)
+    if sensor in ("sentinel2", "rgb"):
+        return (x + (offset or 0.0)) / C.S2_QUANTIFICATION
+    if sensor == "cbers4_mux":
+        return x * C.CBERS_SCALE
+    raise ValueError(f"sensor desconhecido: {sensor}")
+
+
+def valid_mask(dn: np.ndarray, sensor: str, cmask: np.ndarray | None = None) -> np.ndarray:
+    """Máscara booleana (H, W) dos pixels utilizáveis."""
+    if sensor == "cbers4_mux":
+        ok = np.all(dn != C.CBERS_NODATA, axis=-1)
+        if cmask is not None:
+            ok &= cmask == C.CBERS_CMASK_CLEAR
+        return ok
+    # Sentinel-2: DN 0 = sem dado; 65535 = saturado
+    return np.all((dn > 0) & (dn < 65535), axis=-1)
+
+
+def fix_invalid(refl: np.ndarray, valid: np.ndarray | None = None) -> np.ndarray:
+    """Substitui NaN/inf pela mediana da banda e limita a faixa física [0, 1.5].
+
+    Reflectância TOA pode passar de 1 em nuvens e alvos especulares; acima de
+    1,5 é erro. Valores negativos aparecem por ruído/correção atmosférica.
+    """
+    out = refl.astype(np.float32, copy=True)
+    for b in range(out.shape[-1]):
+        ch = out[..., b]
+        bad = ~np.isfinite(ch)
+        if valid is not None:
+            bad |= ~valid
+        if bad.any():
+            good = ch[~bad]
+            ch[bad] = np.median(good) if good.size else 0.0
+    np.clip(out, 0.0, 1.5, out=out)
+    return out
+
+
+def harmonize_l1c(dn: np.ndarray) -> np.ndarray:
+    """DN do L1C atual → escala do EuroSAT (sem o deslocamento de +1000)."""
+    x = dn.astype(np.int32) + C.S2_RADIO_ADD_OFFSET
+    return np.clip(x, 0, 65535).astype(np.uint16)
+
+
+def scene_reflectance(scene: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Reflectância tratada + máscara de validade para uma cena de `load_scene`."""
+    sensor = scene["sensor"]
+    valid = valid_mask(scene["dn"], sensor, scene.get("cmask"))
+    offset = C.S2_RADIO_ADD_OFFSET if scene["name"] == "s2" else None
+    refl = to_reflectance(scene["dn"], sensor, offset)
+    return fix_invalid(refl, valid), valid
 
 
 # ─── Normalização ─────────────────────────────────────────────────────────────
 
+def standardize_fit(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Média e desvio por coluna — calcular SÓ no treino (evita vazamento)."""
+    mu = X.mean(axis=0)
+    sd = X.std(axis=0)
+    sd[sd < 1e-12] = 1.0
+    return mu, sd
+
+
+def standardize_apply(X: np.ndarray, mu: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    return (X - mu) / sd
+
+
 def normalize_minmax(img: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """
-    Normalização min-max por imagem completa.
-
-    Mapeia cada canal para [0, 1] usando seus valores mínimo e máximo.
-    Finalidade: remover diferenças de iluminação entre cenas, permitindo
-    que o classificador compare características espectrais relativas.
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W, C) ou (H, W)
-        Imagem com valores em qualquer escala.
-    eps : float
-        Valor pequeno para evitar divisão por zero.
-
-    Retorna
-    -------
-    ndarray com valores em [0, 1].
-    """
+    """Min-max por banda → [0, 1] (usada na visualização de bandas isoladas)."""
     img = img.astype(np.float32)
+    mn = img.reshape(-1, img.shape[-1]).min(axis=0) if img.ndim == 3 else img.min()
+    mx = img.reshape(-1, img.shape[-1]).max(axis=0) if img.ndim == 3 else img.max()
+    return (img - mn) / (mx - mn + eps)
+
+
+# ─── Visualização ─────────────────────────────────────────────────────────────
+
+def stretch(img: np.ndarray, p_low: float = 2, p_high: float = 98,
+            valid: np.ndarray | None = None, limits=None, gamma: float = 1.0,
+            joint: bool = False):
+    """Realce linear por percentis, banda a banda → uint8.
+
+    `limits` permite aplicar o mesmo realce a várias imagens (comparação justa).
+    `joint=True` usa os mesmos limites nas três bandas: preserva o balanço de
+    cor (sem isso, a névoa no azul deixa a cena magenta).
+    Retorna (imagem uint8, limites usados).
+    """
+    x = img.astype(np.float32)
+    if x.ndim == 2:
+        x = x[..., None]
+    if limits is None:
+        sample = x[valid] if valid is not None else x.reshape(-1, x.shape[-1])
+        lo = np.percentile(sample, p_low, axis=0)
+        hi = np.percentile(sample, p_high, axis=0)
+        if joint:
+            lo, hi = np.full_like(lo, lo.min()), np.full_like(hi, hi.max())
+        limits = (lo, hi)
+    lo, hi = limits
+    y = np.clip((x - lo) / (hi - lo + 1e-8), 0, 1) ** (1.0 / gamma)
+    y = (y * 255).astype(np.uint8)
+    return (y[..., 0] if img.ndim == 2 else y), limits
+
+
+COMPOSITES = {
+    # nome: (papéis R, G, B)
+    "cor_verdadeira": ("red", "green", "blue"),
+    "falsa_cor": ("nir", "red", "green"),       # vegetação em vermelho
+    "swir": ("swir2", "nir", "red"),            # solo/urbano em tons de rosa/marrom
+}
+
+
+def band_index(sensor: str, role: str) -> int:
+    """Posição da banda que cumpre um papel físico (ex.: 'nir') no sensor."""
+    info = C.SENSOR_BANDS[sensor]
+    if role not in info["roles"]:
+        raise KeyError(f"o sensor {sensor} não tem banda '{role}'")
+    return info["names"].index(info["roles"][role])
+
+
+def composite(refl: np.ndarray, sensor: str, kind: str = "cor_verdadeira",
+              valid=None, limits=None, gamma: float | None = None):
+    """Composição colorida RGB uint8 a partir dos papéis das bandas."""
+    roles = COMPOSITES[kind]
+    idx = [band_index(sensor, r) for r in roles]
+    natural = kind == "cor_verdadeira"
+    return stretch(refl[..., idx], p_low=1 if natural else 2, p_high=99 if natural else 98,
+                   valid=valid, limits=limits, joint=natural,
+                   gamma=gamma if gamma is not None else (1.3 if natural else 1.0))
+
+
+# ─── Filtros ──────────────────────────────────────────────────────────────────
+
+def denoise_median(img: np.ndarray, size: int = 3) -> np.ndarray:
+    """Filtro de mediana banda a banda (remove ruído impulsivo, preserva bordas)."""
     if img.ndim == 2:
-        mn, mx = img.min(), img.max()
-        return (img - mn) / (mx - mn + eps)
-    # Por canal
-    out = np.empty_like(img)
-    for c in range(img.shape[-1]):
-        ch = img[..., c]
-        mn, mx = ch.min(), ch.max()
-        out[..., c] = (ch - mn) / (mx - mn + eps)
+        return ndimage.median_filter(img, size=size)
+    return np.stack([ndimage.median_filter(img[..., b], size=size)
+                     for b in range(img.shape[-1])], axis=-1)
+
+
+def majority_filter(labels: np.ndarray, n_classes: int, size: int = 3,
+                    valid: np.ndarray | None = None) -> np.ndarray:
+    """Filtro de moda (maioria) para mapas temáticos.
+
+    Para cada classe, conta quantos vizinhos numa janela size×size têm aquele
+    rótulo (filtro de média sobre a máscara binária) e escolhe a mais votada.
+    """
+    votes = np.stack([ndimage.uniform_filter((labels == k).astype(np.float32), size=size)
+                      for k in range(n_classes)], axis=-1)
+    if valid is not None:
+        votes[~valid] = 0
+    out = votes.argmax(axis=-1).astype(labels.dtype)
+    if valid is not None:
+        out[~valid] = labels[~valid]
     return out
-
-
-def normalize_global(X: np.ndarray) -> np.ndarray:
-    """
-    Normalização global sobre todo o dataset.
-
-    Calcula média e desvio padrão do dataset completo por canal e aplica
-    standardization (z-score). Usado antes do SVM/k-NN quando os valores
-    precisam ter mesma escala entre diferentes imagens.
-
-    Parâmetros
-    ----------
-    X : ndarray (N, H, W, C)
-        Dataset completo.
-
-    Retorna
-    -------
-    X_norm : ndarray normalizado
-    mean : ndarray com médias por canal
-    std : ndarray com desvios por canal
-    """
-    X = X.astype(np.float32)
-    mean = X.mean(axis=(0, 1, 2), keepdims=True)
-    std  = X.std(axis=(0, 1, 2), keepdims=True) + 1e-8
-    return (X - mean) / std, mean.squeeze(), std.squeeze()
-
-
-# ─── Tratamento de valores inválidos ──────────────────────────────────────────
-
-def fix_invalid_values(img: np.ndarray) -> np.ndarray:
-    """
-    Corrige valores inválidos: NaN, infinitos, negativos e saturação.
-
-    Finalidade: imagens de satélite podem conter:
-      - NaN ou inf: erros de sensor ou bordas do swath
-      - Valores negativos: ruído de fundo na reflectância de superfície
-      - Saturação (>1.0 após normalização): nuvens muito brilhantes
-
-    Estratégia:
-      - NaN/inf → substituídos pela mediana do canal
-      - Negativos → 0.0
-      - > 1.0 após normalização → 1.0
-    """
-    img = img.copy().astype(np.float32)
-
-    # Substitui NaN e inf pela mediana do canal
-    for c in range(img.shape[-1]) if img.ndim == 3 else [None]:
-        ch = img[..., c] if c is not None else img
-        mask = ~np.isfinite(ch)
-        if mask.any():
-            ch[mask] = np.nanmedian(ch[~mask]) if (~mask).any() else 0.0
-        if c is not None:
-            img[..., c] = ch
-
-    # Clipa para [0, 1] após normalização
-    np.clip(img, 0.0, 1.0, out=img)
-    return img
-
-
-# ─── Composição colorida ──────────────────────────────────────────────────────
-
-def compose_rgb(img_array: np.ndarray, r=0, g=1, b=2) -> np.ndarray:
-    """
-    Composição colorida verdadeira (RGB natural) ou falsa cor.
-
-    Para Sentinel-2 com 13 bandas:
-      - RGB verdadeiro:  R=B4(red), G=B3(green), B=B2(blue)
-      - Falsa cor NIR:   R=B8(NIR), G=B4(red), B=B3(green)
-
-    No dataset EuroSAT RGB, as bandas 0,1,2 já são B4, B3, B2.
-
-    Parâmetros
-    ----------
-    img_array : ndarray (H, W, C)
-        Imagem com C ≥ 3 canais.
-    r, g, b : int
-        Índices de canal para cada cor.
-
-    Retorna
-    -------
-    ndarray (H, W, 3) com valores em [0, 1].
-    """
-    rgb = np.stack([img_array[..., r], img_array[..., g], img_array[..., b]], axis=-1)
-    return normalize_minmax(rgb)
-
-
-# ─── Redução de ruído ─────────────────────────────────────────────────────────
-
-def denoise_gaussian(img: np.ndarray, sigma: float = 0.8) -> np.ndarray:
-    """
-    Suavização gaussiana para redução de ruído de sensor.
-
-    Finalidade: imagens de satélite podem apresentar ruído de quantização
-    e interferência atmosférica. Um filtro gaussiano leve (sigma≈0.8-1.5)
-    suaviza ruído de alta frequência sem borrar bordas importantes.
-
-    Não aplicado ao dataset EuroSAT (já preprocessado), mas disponível
-    para imagens brutas ou com artefatos visíveis.
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W) ou (H, W, C)
-    sigma : float
-        Desvio padrão do kernel gaussiano.
-
-    Retorna
-    -------
-    ndarray suavizado.
-    """
-    if img.ndim == 2:
-        return gaussian_filter(img, sigma=sigma)
-    out = np.empty_like(img)
-    for c in range(img.shape[-1]):
-        out[..., c] = gaussian_filter(img[..., c], sigma=sigma)
-    return out
-
-
-# ─── Redimensionamento / alinhamento ──────────────────────────────────────────
-
-def resize_to(img: np.ndarray, size: tuple[int, int] = (64, 64)) -> np.ndarray:
-    """
-    Redimensiona imagem para tamanho padrão.
-
-    Finalidade: alinhamento espacial entre bandas com diferentes resoluções
-    (ex: Sentinel-2 B2/B3/B4 = 10m, B5-B7 = 20m, B1 = 60m). Todas as
-    bandas são redimensionadas para o tamanho da banda de maior resolução.
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W) ou (H, W, C)
-    size : tuple (height, width)
-
-    Retorna
-    -------
-    ndarray redimensionado.
-    """
-    pil_img = Image.fromarray((img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8))
-    pil_img = pil_img.resize((size[1], size[0]), Image.LANCZOS)
-    return np.array(pil_img).astype(np.float32) / 255.0
-
-
-# ─── Pipeline completo ────────────────────────────────────────────────────────
-
-def preprocess_dataset(X: np.ndarray) -> np.ndarray:
-    """
-    Aplica pipeline completo de pré-processamento sobre o dataset.
-
-    Etapas:
-      1. Conversão para float32
-      2. Correção de valores inválidos
-      3. Normalização min-max por imagem
-
-    Parâmetros
-    ----------
-    X : ndarray (N, H, W, C) com valores em [0, 255]
-
-    Retorna
-    -------
-    ndarray (N, H, W, C) normalizado em [0, 1]
-    """
-    X = X.astype(np.float32)
-    # Se os valores estiverem em [0, 255], normaliza para [0, 1]
-    if X.max() > 1.0:
-        X = X / 255.0
-    out = np.empty_like(X)
-    for i in range(len(X)):
-        img = fix_invalid_values(X[i])
-        out[i] = img
-    return out
-
-
-# ─── Visualização diagnóstica ─────────────────────────────────────────────────
-
-def plot_preprocessing_demo(
-    img_raw: np.ndarray,
-    class_name: str,
-    save_path: Path | None = None,
-) -> None:
-    """
-    Gera figura mostrando as etapas de pré-processamento.
-
-    Mostra: original → normalizado → com ruído → sem ruído
-    """
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    fig.suptitle(f"Pré-processamento — {class_name}", fontsize=14, fontweight="bold")
-
-    # 1. Original (uint8)
-    raw = (img_raw * 255).astype(np.uint8) if img_raw.max() <= 1.0 else img_raw.astype(np.uint8)
-    axes[0].imshow(raw)
-    axes[0].set_title("1. Original")
-    axes[0].axis("off")
-
-    # 2. Normalizado [0,1]
-    normalized = normalize_minmax(img_raw.astype(np.float32) / 255.0)
-    axes[1].imshow(normalized)
-    axes[1].set_title("2. Normalizado [0,1]")
-    axes[1].axis("off")
-
-    # 3. Com ruído simulado
-    noisy = normalized + np.random.normal(0, 0.05, normalized.shape)
-    noisy = np.clip(noisy, 0, 1)
-    axes[2].imshow(noisy)
-    axes[2].set_title("3. Com ruído (simulado)")
-    axes[2].axis("off")
-
-    # 4. Após filtro gaussiano
-    denoised = denoise_gaussian(noisy, sigma=1.0)
-    denoised = np.clip(denoised, 0, 1)
-    axes[3].imshow(denoised)
-    axes[3].set_title("4. Filtrado (gaussiano)")
-    axes[3].axis("off")
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"✓ Figura salva: {save_path}")
-    plt.close()
-
-
-def plot_band_histograms(
-    img: np.ndarray,
-    class_name: str,
-    band_names: list[str] | None = None,
-    save_path: Path | None = None,
-) -> None:
-    """
-    Plota histograma de intensidade por canal de cor.
-
-    Permite verificar a distribuição espectral de cada classe,
-    evidenciando diferenças que o classificador aprenderá.
-    """
-    n_bands = img.shape[-1]
-    if band_names is None:
-        band_names = [f"Canal {i+1}" for i in range(n_bands)]
-    colors = ["#E74C3C", "#2ECC71", "#3498DB"][:n_bands]
-
-    fig, axes = plt.subplots(1, n_bands, figsize=(4 * n_bands, 3.5), sharey=True)
-    if n_bands == 1:
-        axes = [axes]
-    fig.suptitle(f"Histograma de Bandas — {class_name}", fontsize=13, fontweight="bold")
-
-    for i, (ax, color) in enumerate(zip(axes, colors)):
-        data = img[..., i].flatten()
-        ax.hist(data, bins=50, color=color, alpha=0.85, edgecolor="none")
-        ax.set_title(band_names[i])
-        ax.set_xlabel("Intensidade")
-        ax.set_xlim(0, 1)
-        ax.spines[["top", "right"]].set_visible(False)
-
-    axes[0].set_ylabel("Frequência")
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"✓ Figura salva: {save_path}")
-    plt.close()
-
-
-if __name__ == "__main__":
-    print("preprocessing.py — módulo de pré-processamento")
-    print("  normalize_minmax   : normalização min-max por canal")
-    print("  fix_invalid_values : trata NaN, inf, negativos")
-    print("  denoise_gaussian   : suavização por filtro gaussiano")
-    print("  resize_to          : alinhamento espacial entre bandas")
-    print("  preprocess_dataset : pipeline completo")

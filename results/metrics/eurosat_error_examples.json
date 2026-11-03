@@ -1,0 +1,26 @@
+[
+  {
+    "true": "PermanentCrop",
+    "pred": "HerbaceousVegetation",
+    "conf": 0.6166666746139526,
+    "file": "erro_0.png"
+  },
+  {
+    "true": "Highway",
+    "pred": "Industrial",
+    "conf": 0.9866666793823242,
+    "file": "erro_1.png"
+  },
+  {
+    "true": "Highway",
+    "pred": "Residential",
+    "conf": 0.33666667342185974,
+    "file": "erro_2.png"
+  },
+  {
+    "true": "AnnualCrop",
+    "pred": "HerbaceousVegetation",
+    "conf": 0.40666666626930237,
+    "file": "erro_3.png"
+  }
+]

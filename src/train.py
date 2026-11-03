@@ -1,377 +1,449 @@
 """
-train.py — Treinamento do classificador Random Forest
+train.py — Etapa 6: treinamento dos classificadores.
 
-Pipeline completo:
-  1. Carrega e prepara o dataset EuroSAT
-  2. Extrai features de cada imagem
-  3. Divide em treino (70%), validação (15%), teste (15%)
-  4. Treina Random Forest com otimização de hiperparâmetros
-  5. Avalia no conjunto de teste
-  6. Salva modelo, métricas e figuras
+Três experimentos, um para cada nível de classificação:
+
+    eurosat   classificação da IMAGEM INTEIRA: cada recorte 64×64 do EuroSAT MS
+              recebe uma de 10 classes. Random Forest + comparação com SVM e k-NN,
+              divisão aleatória × espacial e ablação "só RGB".
+    s2        classificação POR PIXEL da cena Sentinel-2 L1C do INPE (Mossoró/RN),
+              5 classes, rótulos do ESA WorldCover 2021, divisão por blocos.
+    cbers     o mesmo para a cena CBERS-4 MUX do INPE (4 bandas, 20 m).
+
+A classificação POR REGIÃO (janela deslizante com o modelo do EuroSAT sobre a cena
+do INPE) fica em predict.py, porque usa o modelo `eurosat` já treinado.
+
+Uso:
+    python src/train.py            # todos
+    python src/train.py eurosat    # um só
 """
 
+from __future__ import annotations
+
 import json
+import sys
 import time
 from pathlib import Path
 
 import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.metrics import f1_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-)
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import seaborn as sns
+from sklearn.svm import SVC
 
-# Importações locais
-import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_loader import (
-    download_eurosat_rgb,
-    load_images_rgb,
-    load_processed,
-    save_processed,
-    CLASS_NAMES,
-    CLASS_COLORS,
-    MACRO_CLASSES,
-    MACRO_CLASS_NAMES,
-    MACRO_COLORS,
-)
-from preprocessing import preprocess_dataset
-from feature_extraction import (
-    extract_features_batch,
-    build_feature_names,
-    plot_feature_importance,
-)
+import config as C  # noqa: E402
+import data_loader as D  # noqa: E402
+import feature_extraction as FE  # noqa: E402
+import preprocessing as P  # noqa: E402
+import sampling as S  # noqa: E402
+from evaluation import compute_metrics, map_to_macro  # noqa: E402
 
-# ─── Caminhos ─────────────────────────────────────────────────────────────────
+EUROSAT_CACHE = C.DATA_PROCESSED / "eurosat_features.npz"
+DEMO_SAMPLES = C.DATA_PROCESSED / "eurosat_demo_samples.npz"
 
-ROOT     = Path(__file__).parent.parent
-MODELS   = ROOT / "models"
-RESULTS  = ROOT / "results"
-FIGURES  = RESULTS / "figures"
-METRICS  = RESULTS / "metrics"
-
-for d in [MODELS, FIGURES, METRICS]:
-    d.mkdir(parents=True, exist_ok=True)
+RF_GRID = [
+    {"max_features": "sqrt", "min_samples_leaf": 1},
+    {"max_features": "sqrt", "min_samples_leaf": 3},
+    {"max_features": 0.3, "min_samples_leaf": 1},
+    {"max_features": 0.3, "min_samples_leaf": 3},
+]
 
 
-# ─── Utilitários de visualização ──────────────────────────────────────────────
-
-def plot_confusion_matrix(
-    cm: np.ndarray,
-    class_names: list[str],
-    title: str = "Matriz de Confusão",
-    save_path: Path | None = None,
-    normalize: bool = True,
-) -> None:
-    """Plota e salva a matriz de confusão."""
-    if normalize:
-        cm_plot = cm.astype(float) / (cm.sum(axis=1, keepdims=True) + 1e-8)
-        fmt = ".2f"
-        vmax = 1.0
-    else:
-        cm_plot = cm
-        fmt = "d"
-        vmax = cm.max()
-
-    fig, ax = plt.subplots(figsize=(max(8, len(class_names)), max(7, len(class_names) - 1)))
-    sns.heatmap(
-        cm_plot,
-        annot=True,
-        fmt=fmt,
-        cmap="Blues",
-        xticklabels=class_names,
-        yticklabels=class_names,
-        vmin=0,
-        vmax=vmax,
-        linewidths=0.5,
-        ax=ax,
-    )
-    ax.set_xlabel("Classe Prevista", fontsize=12)
-    ax.set_ylabel("Classe Real", fontsize=12)
-    ax.set_title(title, fontsize=14, fontweight="bold", pad=15)
-    plt.xticks(rotation=35, ha="right", fontsize=9)
-    plt.yticks(rotation=0, fontsize=9)
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  ✓ Figura salva: {save_path}")
-    plt.close()
+def rf(n_estimators: int = 300, class_weight="balanced", **kw) -> RandomForestClassifier:
+    return RandomForestClassifier(n_estimators=n_estimators, n_jobs=-1, random_state=C.SEED,
+                                  class_weight=class_weight, **kw)
 
 
-def plot_class_distribution(y: np.ndarray, class_names: list[str], save_path: Path | None = None) -> None:
-    """Plota distribuição das classes no dataset."""
-    counts = [(class_names[i], np.sum(y == i)) for i in range(len(class_names))]
-    counts.sort(key=lambda x: -x[1])
-    names, vals = zip(*counts)
-
-    colors = [CLASS_COLORS.get(n, "#95A5A6") for n in names]
-
-    fig, ax = plt.subplots(figsize=(12, 5))
-    bars = ax.bar(range(len(names)), vals, color=colors, alpha=0.9, edgecolor="white", linewidth=0.8)
-    ax.set_xticks(range(len(names)))
-    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=10)
-    ax.set_ylabel("Número de amostras")
-    ax.set_title("Distribuição das Classes — EuroSAT", fontsize=13, fontweight="bold")
-    ax.spines[["top", "right"]].set_visible(False)
-
-    for bar, val in zip(bars, vals):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 20, str(val),
-                ha="center", va="bottom", fontsize=9, fontweight="bold")
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  ✓ Figura salva: {save_path}")
-    plt.close()
+def tune_rf(Xtr, ytr, Xva, yva, n_estimators=300, class_weight="balanced") -> tuple[dict, list[dict]]:
+    """Escolhe hiperparâmetros pelo F1-macro na VALIDAÇÃO (o teste não participa)."""
+    log = []
+    for params in RF_GRID:
+        t0 = time.time()
+        m = rf(n_estimators, class_weight=class_weight, **params).fit(Xtr, ytr)
+        f = f1_score(yva, m.predict(Xva), average="macro")
+        log.append({**params, "val_macro_f1": float(f), "seconds": round(time.time() - t0, 1)})
+        print(f"    {params} → F1-macro val = {f:.4f}")
+    best = max(log, key=lambda d: d["val_macro_f1"])
+    return {k: best[k] for k in ("max_features", "min_samples_leaf")}, log
 
 
-def plot_sample_images(X: np.ndarray, y: np.ndarray, class_names: list[str], save_path: Path | None = None) -> None:
-    """Plota grade de amostras por classe."""
-    n_classes = len(class_names)
-    n_samples = 5
-    fig, axes = plt.subplots(n_classes, n_samples, figsize=(n_samples * 1.8, n_classes * 1.8))
-    fig.suptitle("Amostras do Dataset EuroSAT — Uma por Classe", fontsize=13, fontweight="bold")
-
-    rng = np.random.default_rng(42)
-    for row, cls_name in enumerate(class_names):
-        cls_idx = CLASS_NAMES.index(cls_name) if cls_name in CLASS_NAMES else row
-        idxs = np.where(y == cls_idx)[0]
-        selected = rng.choice(idxs, min(n_samples, len(idxs)), replace=False) if len(idxs) > 0 else []
-
-        for col in range(n_samples):
-            ax = axes[row, col]
-            if col < len(selected):
-                img = X[selected[col]]
-                ax.imshow(img)
-            else:
-                ax.set_facecolor("#EEEEEE")
-            ax.axis("off")
-            if col == 0:
-                ax.set_ylabel(cls_name, fontsize=8, labelpad=3, rotation=0, ha="right", va="center")
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  ✓ Figura salva: {save_path}")
-    plt.close()
+def save_bundle(name: str, model, **meta) -> Path:
+    C.MODELS.mkdir(parents=True, exist_ok=True)
+    path = C.MODELS / f"{name}.joblib"
+    joblib.dump({"model": model, **meta}, path, compress=3)
+    print(f"  ✓ modelo: {path.relative_to(C.ROOT)} ({path.stat().st_size / 1e6:.1f} MB)")
+    return path
 
 
-def plot_metrics_bar(report_dict: dict, class_names: list[str], save_path: Path | None = None) -> None:
-    """Plota métricas por classe em gráfico de barras agrupadas."""
-    metrics = ["precision", "recall", "f1-score"]
-    x = np.arange(len(class_names))
-    width = 0.25
-    colors = ["#3498DB", "#2ECC71", "#E74C3C"]
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-    for i, (metric, color) in enumerate(zip(metrics, colors)):
-        vals = [report_dict.get(cls, {}).get(metric, 0) for cls in class_names]
-        bars = ax.bar(x + i * width, vals, width, label=metric.capitalize(), color=color, alpha=0.85)
-
-    ax.set_xlabel("Classe", fontsize=11)
-    ax.set_ylabel("Score", fontsize=11)
-    ax.set_title("Métricas por Classe — Random Forest", fontsize=13, fontweight="bold")
-    ax.set_xticks(x + width)
-    ax.set_xticklabels(class_names, rotation=35, ha="right", fontsize=9)
-    ax.set_ylim(0, 1.1)
-    ax.legend(fontsize=10)
-    ax.axhline(y=0.9, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.spines[["top", "right"]].set_visible(False)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  ✓ Figura salva: {save_path}")
-    plt.close()
+def save_json(name: str, data: dict) -> None:
+    C.METRICS.mkdir(parents=True, exist_ok=True)
+    (C.METRICS / f"{name}.json").write_text(json.dumps(data, indent=2, ensure_ascii=False))
+    print(f"  ✓ métricas: results/metrics/{name}.json")
 
 
-# ─── Pipeline principal ───────────────────────────────────────────────────────
+# ═══ Experimento 1 — EuroSAT (imagem inteira) ═════════════════════════════════
 
-def main() -> None:
-    print("=" * 65)
-    print("  Treinamento — Random Forest — Trabalho 10 PDI")
-    print("=" * 65)
-
-    # ── 1. Dataset ─────────────────────────────────────────────────────────────
-    print("\n[1/6] Carregando dataset...")
-    download_eurosat_rgb()
-
-    # Tenta carregar features pré-computadas
-    cached = load_processed("features")
-    if cached is not None:
-        F, y = cached
-        print("  Carregando imagens para visualizações...")
-        X, y_raw, found_classes = load_images_rgb(max_per_class=500)
-        X = preprocess_dataset(X)
-    else:
-        X, y_raw, found_classes = load_images_rgb(max_per_class=500)
-        print(f"  Pré-processando {len(X)} imagens...")
-        X = preprocess_dataset(X)
-        y = y_raw
-
-        # ── 2. Extração de features ────────────────────────────────────────────
-        print("\n[2/6] Extraindo características...")
-        F = extract_features_batch(X, verbose=True)
-        save_processed(F, y, "features")
-
-    # Classes presentes
-    present_classes = sorted(set(int(i) for i in y))
-    active_class_names = [CLASS_NAMES[i] for i in present_classes]
-    print(f"  Classes ativas: {active_class_names}")
-
-    # ── 3. Visualizações exploratórias ─────────────────────────────────────────
-    print("\n[3/6] Gerando visualizações...")
-    plot_class_distribution(y, active_class_names, FIGURES / "class_distribution.png")
-    plot_sample_images(X, y, active_class_names, FIGURES / "sample_images.png")
-
-    # ── 4. Divisão treino/val/teste ────────────────────────────────────────────
-    print("\n[4/6] Dividindo dados...")
-    # 70% treino, 15% val, 15% teste (estratificado)
-    F_train, F_temp, y_train, y_temp = train_test_split(
-        F, y, test_size=0.30, random_state=42, stratify=y
-    )
-    F_val, F_test, y_val, y_test = train_test_split(
-        F_temp, y_temp, test_size=0.50, random_state=42, stratify=y_temp
-    )
-    print(f"  Treino:    {len(F_train):5d} amostras")
-    print(f"  Validação: {len(F_val):5d} amostras")
-    print(f"  Teste:     {len(F_test):5d} amostras")
-
-    # ── 5. Treinamento ─────────────────────────────────────────────────────────
-    print("\n[5/6] Treinando Random Forest...")
-    print("  Parâmetros: n_estimators=200, max_depth=None, min_samples_leaf=2")
+def build_eurosat_features() -> dict:
+    """Lê os 27.000 recortes, converte para reflectância e extrai as características."""
+    if EUROSAT_CACHE.exists():
+        return dict(np.load(EUROSAT_CACHE, allow_pickle=False))
+    D.ensure_eurosat_ms()
+    files = D.eurosat_files()
+    print(f"  extraindo características de {len(files)} recortes …")
+    rgb_idx = [C.EUROSAT_BANDS.index(b) for b in C.SENSOR_BANDS["rgb"]["names"]]
+    X_ms, X_rgb, y, lonlat, names = [], [], [], [], []
+    batch, labels, coords = [], [], []
     t0 = time.time()
 
-    clf = RandomForestClassifier(
-        n_estimators=200,
-        min_samples_leaf=2,
-        max_features="sqrt",
-        n_jobs=-1,
-        random_state=42,
-        class_weight="balanced",
-        oob_score=True,
-    )
-    clf.fit(F_train, y_train)
-    elapsed = time.time() - t0
-    print(f"  Tempo de treino: {elapsed:.1f}s")
-    print(f"  OOB Score:       {clf.oob_score_:.4f}")
+    def flush():
+        refl = P.fix_invalid(P.to_reflectance(np.stack(batch), "sentinel2"))
+        X_ms.append(FE.patch_features(refl, "sentinel2"))
+        X_rgb.append(FE.patch_features(refl[..., rgb_idx], "rgb"))
+        batch.clear()
 
-    # Validação
-    y_val_pred = clf.predict(F_val)
-    val_acc = accuracy_score(y_val, y_val_pred)
-    print(f"  Acurácia (val):  {val_acc:.4f}")
+    for i, (path, label) in enumerate(files):
+        arr, ll = D.read_eurosat_tif(path)
+        batch.append(arr)
+        y.append(label)
+        lonlat.append(ll)
+        names.append(f"{path.parent.name}/{path.name}")
+        if len(batch) == 1000:
+            flush()
+            print(f"    {i + 1}/{len(files)}  ({time.time() - t0:.0f} s)")
+    if batch:
+        flush()
+    data = {"X_ms": np.concatenate(X_ms), "X_rgb": np.concatenate(X_rgb),
+            "y": np.array(y, dtype=np.int64), "lonlat": np.array(lonlat, dtype=np.float64),
+            "files": np.array(names)}
+    np.savez_compressed(EUROSAT_CACHE, **data)
+    print(f"  ✓ cache: {EUROSAT_CACHE.relative_to(C.ROOT)}  X_ms={data['X_ms'].shape}")
+    return data
 
-    # ── 6. Avaliação no conjunto de teste ──────────────────────────────────────
-    print("\n[6/6] Avaliando no conjunto de teste...")
-    y_test_pred = clf.predict(F_test)
-    y_test_proba = clf.predict_proba(F_test)
 
-    test_acc = accuracy_score(y_test, y_test_pred)
-    cm = confusion_matrix(y_test, y_test_pred, labels=present_classes)
-    report = classification_report(
-        y_test, y_test_pred,
-        labels=present_classes,
-        target_names=active_class_names,
-        output_dict=True,
-    )
-    report_str = classification_report(
-        y_test, y_test_pred,
-        labels=present_classes,
-        target_names=active_class_names,
-    )
+def save_demo_samples(data: dict, test_idx: np.ndarray, per_class: int = 24) -> None:
+    """Guarda recortes do TESTE (nunca vistos no treino) para a interface web."""
+    rng = np.random.default_rng(C.SEED)
+    chosen = []
+    for k in range(len(C.EUROSAT_CLASSES)):
+        idx = test_idx[data["y"][test_idx] == k]
+        chosen += sorted(rng.choice(idx, min(per_class, len(idx)), replace=False).tolist())
+    chips = np.stack([D.read_eurosat_tif(C.EUROSAT_MS_DIR / data["files"][i])[0] for i in chosen])
+    np.savez_compressed(DEMO_SAMPLES, chips=chips, index=np.array(chosen),
+                        y=data["y"][chosen], files=data["files"][chosen])
+    print(f"  ✓ amostras de demonstração (teste): {len(chosen)}")
 
-    print(f"\n  Acurácia (teste): {test_acc:.4f}")
-    print("\n" + report_str)
 
-    # Salva modelo
-    model_path = MODELS / "random_forest.joblib"
-    joblib.dump(clf, model_path)
-    print(f"  ✓ Modelo salvo: {model_path}")
+def calibrate_rgb_jpg(n_per_class: int = 20) -> dict | None:
+    """Ajusta reflectância ≈ a·JPG + b com os pares EuroSAT RGB × MS (mesmos recortes).
 
-    # Salva scaler (identidade — RF não precisa, mas mantemos interface uniforme)
-    scaler_path = MODELS / "scaler.joblib"
-    joblib.dump(None, scaler_path)
+    Necessário para a interface aceitar JPG/PNG comuns no modelo "só RGB".
+    """
+    rgb_dir = C.DATA_RAW / "EuroSAT_RGB"
+    if not rgb_dir.exists():
+        return None
+    from PIL import Image
+    rng = np.random.default_rng(C.SEED)
+    xs, ys = [[], [], []], [[], [], []]
+    for cls in C.EUROSAT_CLASSES:
+        for i in rng.choice(np.arange(1, 2000), n_per_class, replace=False):
+            ms, jpg = C.EUROSAT_MS_DIR / cls / f"{cls}_{i}.tif", rgb_dir / cls / f"{cls}_{i}.jpg"
+            if not (ms.exists() and jpg.exists()):
+                continue
+            a = P.to_reflectance(D.read_eurosat_tif(ms)[0][..., [3, 2, 1]], "sentinel2")
+            j = np.asarray(Image.open(jpg).convert("RGB"), dtype=np.float32)
+            for b in range(3):
+                keep = j[..., b] < 250  # pixels saturados no JPG ficam de fora
+                xs[b].append(j[..., b][keep])
+                ys[b].append(a[..., b][keep])
+    cal = {"slope": [], "intercept": [], "r": []}
+    for b in range(3):
+        x, y = np.concatenate(xs[b]), np.concatenate(ys[b])
+        a, c = np.polyfit(x, y, 1)
+        cal["slope"].append(float(a))
+        cal["intercept"].append(float(c))
+        cal["r"].append(float(np.corrcoef(x, y)[0, 1]))
+    (C.DATA_PROCESSED / "rgb_jpg_calibration.json").write_text(json.dumps(cal, indent=2))
+    print(f"  ✓ calibração JPG→reflectância: r = {[round(v, 4) for v in cal['r']]}")
+    return cal
 
-    # Salva métricas em JSON
-    metrics_data = {
-        "model": "RandomForestClassifier",
-        "n_estimators": 200,
-        "dataset": "EuroSAT RGB",
-        "n_classes": len(active_class_names),
-        "class_names": active_class_names,
-        "n_train": len(F_train),
-        "n_val": len(F_val),
-        "n_test": len(F_test),
-        "oob_score": float(clf.oob_score_),
-        "val_accuracy": float(val_acc),
-        "test_accuracy": float(test_acc),
-        "macro_avg_precision": report["macro avg"]["precision"],
-        "macro_avg_recall": report["macro avg"]["recall"],
-        "macro_avg_f1": report["macro avg"]["f1-score"],
-        "weighted_avg_f1": report["weighted avg"]["f1-score"],
-        "per_class": {
-            cls: {
-                "precision": report[cls]["precision"],
-                "recall": report[cls]["recall"],
-                "f1": report[cls]["f1-score"],
-                "support": int(report[cls]["support"]),
-            }
-            for cls in active_class_names
-        },
-        "confusion_matrix": cm.tolist(),
-        "confusion_matrix_labels": active_class_names,
-        "training_time_seconds": float(elapsed),
-        "feature_dim": int(F.shape[1]),
+
+def train_eurosat() -> dict:
+    print("\n" + "═" * 64 + "\n  Experimento 1 — EuroSAT MS: classificação da imagem inteira\n" + "═" * 64)
+    data = build_eurosat_features()
+    X, Xrgb, y = data["X_ms"], data["X_rgb"], data["y"]
+    names_ms, names_rgb = FE.patch_feature_names("sentinel2"), FE.patch_feature_names("rgb")
+    classes = C.EUROSAT_CLASSES
+
+    groups = S.geo_groups(data["lonlat"])
+    tr, va, te = S.spatial_split(y, groups, seed=C.SEED)
+    print(f"  divisão espacial: treino {len(tr)} · validação {len(va)} · teste {len(te)} "
+          f"({len(np.unique(groups))} células de 0,25°)")
+    assert not (set(groups[tr]) & set(groups[te])), "grupo repetido entre treino e teste"
+
+    print("  [1] ajuste de hiperparâmetros do Random Forest (validação)")
+    best, grid_log = tune_rf(X[tr], y[tr], X[va], y[va])
+    print(f"      melhor: {best}")
+
+    trva = np.concatenate([tr, va])
+    t0 = time.time()
+    model = rf(**best).fit(X[trva], y[trva])
+    t_train = time.time() - t0
+    t0 = time.time()
+    proba = model.predict_proba(X[te])
+    t_pred = time.time() - t0
+    pred = proba.argmax(axis=1)
+    m = compute_metrics(y[te], pred, classes)
+    print(f"  [2] RF (13 bandas) teste: acurácia {m['accuracy']:.4f}  F1-macro {m['macro_f1']:.4f}")
+
+    # Solo exposto não existe no EuroSAT: remove a linha/coluna vazia
+    macro_classes = [c for c in C.LANDCOVER_CLASSES if c != "Solo exposto"]
+    lut = {C.LANDCOVER_CLASSES.index(c): i for i, c in enumerate(macro_classes)}
+    yt_m = np.vectorize(lut.get)(map_to_macro(y[te]))
+    yp_m = np.vectorize(lut.get)(map_to_macro(pred))
+    macro = compute_metrics(yt_m, yp_m, macro_classes)
+    print(f"      agrupado em 4 macro-classes: acurácia {macro['accuracy']:.4f}")
+
+    print("  [3] comparações (mesmo teste espacial)")
+    comparisons = {}
+
+    def run(label, est, Xa, fit_idx):
+        t0 = time.time()
+        est.fit(Xa[fit_idx], y[fit_idx])
+        tt = time.time() - t0
+        t1 = time.time()
+        pred_c = est.predict(Xa[te])
+        tp = time.time() - t1
+        mm = compute_metrics(y[te], pred_c, classes)
+        comparisons[label] = {"accuracy": mm["accuracy"], "macro_f1": mm["macro_f1"],
+                              "kappa": mm["kappa"], "train_seconds": round(tt, 1),
+                              "predict_ms_per_1000": round(tp / len(te) * 1e6, 1),
+                              "per_class_f1": {c: v["f1"] for c, v in mm["per_class"].items()}}
+        print(f"      {label:34s} acc {mm['accuracy']:.4f}  F1 {mm['macro_f1']:.4f}  ({tt:.0f} s)")
+        return est
+
+    comparisons["Random Forest — 13 bandas"] = {
+        "accuracy": m["accuracy"], "macro_f1": m["macro_f1"], "kappa": m["kappa"],
+        "train_seconds": round(t_train, 1), "predict_ms_per_1000": round(t_pred / len(te) * 1e6, 1),
+        "per_class_f1": {c: v["f1"] for c, v in m["per_class"].items()}}
+    run("SVM (RBF) — 13 bandas",
+        make_pipeline(StandardScaler(), SVC(C=10, gamma="scale", random_state=C.SEED)), X, trva)
+    run("k-NN (k=7) — 13 bandas",
+        make_pipeline(StandardScaler(), KNeighborsClassifier(n_neighbors=7, n_jobs=-1)), X, trva)
+    rgb_model = run("Random Forest — só RGB", rf(**best), Xrgb, trva)
+
+    # vazamento: mesmo modelo, divisão aleatória
+    rtr, rva, rte = S.random_split(y, seed=C.SEED)
+    leak = rf(**best).fit(X[np.concatenate([rtr, rva])], y[np.concatenate([rtr, rva])])
+    m_rand = compute_metrics(y[rte], leak.predict(X[rte]), classes)
+    print(f"  [4] divisão ALEATÓRIA: acurácia {m_rand['accuracy']:.4f} "
+          f"(espacial: {m['accuracy']:.4f}) → diferença = otimismo por vazamento")
+
+    imp = model.feature_importances_
+    order = np.argsort(imp)[::-1]
+    save_bundle("rf_eurosat_ms", model, feature_names=names_ms, classes=classes, sensor="sentinel2",
+                params=best, n_estimators=300)
+    save_bundle("rf_eurosat_rgb", rgb_model, feature_names=names_rgb, classes=classes, sensor="rgb",
+                params=best, n_estimators=300)
+    np.savez_compressed(C.METRICS / "eurosat_test_predictions.npz", index=te, y_true=y[te],
+                        y_pred=pred, proba=proba.astype(np.float32))
+    save_demo_samples(data, te)
+    cal = calibrate_rgb_jpg()
+
+    counts = np.bincount(y, minlength=len(classes))
+    result = {
+        "experiment": "eurosat", "level": "imagem inteira",
+        "dataset": "EuroSAT MS (Sentinel-2 L1C, 13 bandas, 64×64 px)",
+        "classes": classes, "class_counts": counts.tolist(),
+        "n_total": int(len(y)), "n_train": int(len(tr)), "n_val": int(len(va)), "n_test": int(len(te)),
+        "split": "espacial — StratifiedGroupKFold por células de 0,25°",
+        "n_groups": int(len(np.unique(groups))),
+        "model": "RandomForestClassifier", "n_estimators": 300, "params": best,
+        "tuning": grid_log, "feature_dim": int(X.shape[1]), "feature_dim_rgb": int(Xrgb.shape[1]),
+        "train_seconds": round(t_train, 2), "predict_ms_per_image": round(t_pred / len(te) * 1000, 3),
+        "test": m, "test_macro": macro, "random_split_test": {
+            "accuracy": m_rand["accuracy"], "macro_f1": m_rand["macro_f1"], "kappa": m_rand["kappa"]},
+        "comparisons": comparisons, "rgb_jpg_calibration": cal,
+        "feature_importance": [{"name": names_ms[i], "importance": float(imp[i])} for i in order[:25]],
     }
-    metrics_path = METRICS / "metrics.json"
-    with open(metrics_path, "w") as f:
-        json.dump(metrics_data, f, indent=2, ensure_ascii=False)
-    print(f"  ✓ Métricas salvas: {metrics_path}")
+    save_json("eurosat", result)
+    return result
 
-    # ── Figuras de resultados ──────────────────────────────────────────────────
-    print("\n  Gerando figuras de resultados...")
 
-    # Matriz de confusão normalizada
-    plot_confusion_matrix(
-        cm, active_class_names,
-        title="Matriz de Confusão — Random Forest (Teste)",
-        save_path=FIGURES / "confusion_matrix.png",
-        normalize=True,
-    )
-    # Matriz de confusão com contagens
-    plot_confusion_matrix(
-        cm, active_class_names,
-        title="Matriz de Confusão — Contagens (Teste)",
-        save_path=FIGURES / "confusion_matrix_counts.png",
-        normalize=False,
-    )
-    # Métricas por classe
-    plot_metrics_bar(report, active_class_names, FIGURES / "metrics_by_class.png")
+# ═══ Experimentos 2 e 3 — cenas do INPE (por pixel) ═══════════════════════════
 
-    # Importância das features
-    feature_names = build_feature_names()
-    plot_feature_importance(
-        feature_names, clf.feature_importances_,
-        top_n=20,
-        save_path=FIGURES / "feature_importance.png",
-    )
+def scene_labels(ref: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """WorldCover → índice da classe do trabalho (−1 = sem classe ou inválido)."""
+    lut = np.full(256, -1, dtype=np.int64)
+    for code, cls in C.WORLDCOVER_TO_CLASS.items():
+        lut[code] = C.LANDCOVER_CLASSES.index(cls)
+    lab = lut[ref]
+    lab[~valid] = -1
+    return lab
 
-    print("\n" + "=" * 65)
-    print(f"  RESULTADO FINAL — Acurácia no Teste: {test_acc:.1%}")
-    print(f"  F1 (macro):   {report['macro avg']['f1-score']:.1%}")
-    print(f"  F1 (weighted): {report['weighted avg']['f1-score']:.1%}")
-    print("=" * 65)
-    print("\n✓ Treinamento concluído. Resultados em results/")
+
+def prepare_scene_features(name: str) -> dict:
+    scene = D.load_scene(name)
+    refl, valid = P.scene_reflectance(scene)
+    feats = FE.pixel_features(refl, scene["sensor"])
+    labels = scene_labels(scene["ref"], valid)
+    return dict(scene=scene, refl=refl, valid=valid, feats=feats, labels=labels)
+
+
+def train_scene(name: str) -> dict:
+    title = {"s2": "Sentinel-2 L1C (INPE)", "cbers": "CBERS-4 MUX (INPE)"}[name]
+    print("\n" + "═" * 64 + f"\n  Experimento por pixel — {title} — {C.AOI_NAME}\n" + "═" * 64)
+    d = prepare_scene_features(name)
+    scene, feats, labels, valid = d["scene"], d["feats"], d["labels"], d["valid"]
+    sensor, res = scene["sensor"], scene["res"]
+    classes = C.LANDCOVER_CLASSES
+    names = FE.pixel_feature_names(sensor)
+    h, w, nf = feats.shape
+
+    block = int(round(1280 / res))  # blocos de 1,28 km
+    split = S.block_split_map((h, w), block, seed=C.SEED)
+    np.save(C.DATA_PROCESSED / f"{name}_split.npy", split)
+    Xf = feats.reshape(-1, nf)
+    # treino: proporcional à raiz da frequência; validação: amostra aleatória
+    # (mesma distribuição do teste); teste: TODOS os pixels dos blocos de teste
+    tr = S.sample_pixels_sqrt(labels, split, S.TRAIN, 40000, len(classes))
+    va = S.sample_random(labels, split, S.VAL, 20000)
+    te = S.sample_pixels(labels, split, S.TEST, None, len(classes))
+    yl = labels.ravel()
+    print(f"  {h}×{w} px de {res:.0f} m · {nf} características · blocos de {block} px")
+    print(f"  amostras: treino {len(tr)} · validação {len(va)} · teste {len(te)} (todos os pixels)")
+
+    print("  [1] ajuste de hiperparâmetros (validação)")
+    best, grid_log = tune_rf(Xf[tr], yl[tr], Xf[va], yl[va], n_estimators=200, class_weight=None)
+    t0 = time.time()
+    model = rf(200, class_weight=None, **best).fit(Xf[tr], yl[tr])
+    t_train = time.time() - t0
+
+    t0 = time.time()
+    pred_test = model.predict(Xf[te])
+    t_pred = time.time() - t0
+    m = compute_metrics(yl[te], pred_test, classes)
+    print(f"  [2] teste: acurácia {m['accuracy']:.4f}  kappa {m['kappa']:.4f}  F1-macro {m['macro_f1']:.4f}")
+
+    sampling_study = _sampling_study(Xf, yl, labels, split, te, best) if name == "s2" else None
+    leakage = _leakage_study(Xf, yl, labels, best, m)
+
+    # mapa completo + pós-processamento por moda
+    print("  [3] classificando a cena inteira …")
+    t0 = time.time()
+    flat_valid = valid.ravel()
+    full = np.zeros(h * w, dtype=np.uint8)
+    full[flat_valid] = _predict_chunks(model, Xf[flat_valid])
+    full = full.reshape(h, w)
+    t_map = time.time() - t0
+    smooth = P.majority_filter(full, len(classes), size=3, valid=valid)
+    m_smooth = compute_metrics(yl[te], smooth.ravel()[te], classes)
+    print(f"      {valid.sum()} pixels em {t_map:.0f} s · com filtro de moda 3×3: "
+          f"acurácia {m_smooth['accuracy']:.4f}  F1-macro {m_smooth['macro_f1']:.4f}")
+
+    # áreas (km²) por classe: mapa do modelo × referência
+    px_km2 = (res * res) / 1e6
+    area_pred = {c: float(((smooth == i) & valid).sum() * px_km2) for i, c in enumerate(classes)}
+    area_ref = {c: float((labels == i).sum() * px_km2) for i, c in enumerate(classes)}
+
+    C.PREDICTIONS.mkdir(parents=True, exist_ok=True)
+    np.save(C.PREDICTIONS / f"{name}_map.npy", smooth)
+    np.save(C.PREDICTIONS / f"{name}_map_raw.npy", full)
+    _write_map_tif(C.PREDICTIONS / f"{name}_map.tif", smooth, valid, scene)
+
+    imp = model.feature_importances_
+    order = np.argsort(imp)[::-1]
+    save_bundle(f"rf_{name}_pixel", model, feature_names=names, classes=classes, sensor=sensor,
+                params=best, n_estimators=200)
+    info = D.scene_info()[name]
+    result = {
+        "experiment": name, "level": "pixel", "scene": info, "aoi": C.AOI_NAME,
+        "aoi_bbox": C.AOI_BBOX, "shape": [h, w], "resolution_m": res,
+        "reference": "ESA WorldCover 2021 v200 (reclassificado em 5 classes)",
+        "classes": classes, "feature_names": names, "feature_dim": nf,
+        "split": f"blocos de {block * res / 1000:.2f} km (60/20/20) com faixa de exclusão de 2 px",
+        "sampling": "treino ∝ √(frequência da classe), mínimo 1500/classe; validação aleatória; "
+                    "teste = todos os pixels dos blocos de teste",
+        "n_train": int(len(tr)), "n_val": int(len(va)), "n_test": int(len(te)),
+        "class_pixels_total": {c: int((labels == i).sum()) for i, c in enumerate(classes)},
+        "model": "RandomForestClassifier", "n_estimators": 200, "params": best, "tuning": grid_log,
+        "train_seconds": round(t_train, 2), "map_seconds": round(t_map, 1),
+        "predict_us_per_pixel": round(t_pred / len(te) * 1e6, 2),
+        "test": m, "test_majority3x3": m_smooth, "sampling_study": sampling_study,
+        "random_split_test": leakage,
+        "area_km2_pred": area_pred, "area_km2_ref": area_ref,
+        "feature_importance": [{"name": names[i], "importance": float(imp[i])} for i in order],
+    }
+    save_json(f"{name}_pixel", result)
+    return result
+
+
+def _sampling_study(Xf, yl, labels, split, te, best) -> dict:
+    """Mesmo modelo, três formas de amostrar o treino — avaliado no mesmo teste."""
+    print("  [extra] estudo da amostragem do treino")
+    n = len(C.LANDCOVER_CLASSES)
+    variants = {
+        "balanceada (8000/classe)": S.sample_pixels(labels, split, S.TRAIN, 8000, n),
+        "proporcional (aleatória)": S.sample_random(labels, split, S.TRAIN, 40000),
+        "raiz da frequência (usada)": S.sample_pixels_sqrt(labels, split, S.TRAIN, 40000, n),
+    }
+    out = {}
+    for label, idx in variants.items():
+        m = rf(200, class_weight=None, **best).fit(Xf[idx], yl[idx])
+        mm = compute_metrics(yl[te], m.predict(Xf[te]), C.LANDCOVER_CLASSES)
+        out[label] = {"n_train": int(len(idx)), "accuracy": mm["accuracy"], "kappa": mm["kappa"],
+                      "macro_f1": mm["macro_f1"],
+                      "f1": {c: v["f1"] for c, v in mm["per_class"].items()}}
+        print(f"      {label:28s} acc {mm['accuracy']:.4f}  F1-macro {mm['macro_f1']:.4f}")
+    return out
+
+
+def _leakage_study(Xf, yl, labels, best, m_block) -> dict:
+    """Mesmo modelo com divisão ALEATÓRIA de pixels: treino e teste ficam vizinhos."""
+    rng = np.random.default_rng(C.SEED + 99)
+    pool = np.flatnonzero(labels.ravel() >= 0)
+    test = rng.choice(pool, 200_000, replace=False)
+    rest = np.zeros(labels.shape, dtype=np.int8).ravel()
+    rest[test] = -1
+    tr = S.sample_pixels_sqrt(labels, rest.reshape(labels.shape), 0, 40000, len(C.LANDCOVER_CLASSES))
+    model = rf(200, class_weight=None, **best).fit(Xf[tr], yl[tr])
+    mm = compute_metrics(yl[test], model.predict(Xf[test]), C.LANDCOVER_CLASSES)
+    print(f"  [extra] divisão ALEATÓRIA de pixels: acurácia {mm['accuracy']:.4f} · F1-macro "
+          f"{mm['macro_f1']:.4f}  (blocos: {m_block['accuracy']:.4f} · {m_block['macro_f1']:.4f})")
+    return {"accuracy": mm["accuracy"], "macro_f1": mm["macro_f1"], "kappa": mm["kappa"],
+            "n_test": int(len(test))}
+
+
+def _predict_chunks(model, X: np.ndarray, chunk: int = 400_000) -> np.ndarray:
+    return np.concatenate([model.predict(X[i:i + chunk]) for i in range(0, len(X), chunk)])
+
+
+def _write_map_tif(path: Path, labels: np.ndarray, valid: np.ndarray, scene: dict) -> None:
+    import rasterio
+    from matplotlib.colors import to_rgb
+    out = labels.astype(np.uint8) + 1
+    out[~valid] = 0
+    with rasterio.open(path, "w", driver="GTiff", height=out.shape[0], width=out.shape[1], count=1,
+                       dtype="uint8", crs=scene["crs"], transform=scene["transform"], nodata=0,
+                       compress="deflate") as dst:
+        dst.write(out, 1)
+        dst.write_colormap(1, {i + 1: tuple(int(v * 255) for v in to_rgb(C.LANDCOVER_COLORS[c])) + (255,)
+                               for i, c in enumerate(C.LANDCOVER_CLASSES)})
+        dst.update_tags(classes=json.dumps({i + 1: c for i, c in enumerate(C.LANDCOVER_CLASSES)},
+                                           ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    which = sys.argv[1:] or ["eurosat", "s2", "cbers"]
+    for w in which:
+        if w == "eurosat":
+            train_eurosat()
+        elif w in ("s2", "cbers"):
+            train_scene(w)
+        else:
+            raise SystemExit(f"experimento desconhecido: {w}")
+    print("\n✓ treinamento concluído")

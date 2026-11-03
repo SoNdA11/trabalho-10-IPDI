@@ -1,388 +1,223 @@
 """
-feature_extraction.py — Extração de características espectrais
+feature_extraction.py — Etapa 4: extração de características.
 
-Características implementadas:
-  1. Estatísticas por canal: média, desvio padrão, mínimo, máximo, mediana
-  2. NDVI — Normalized Difference Vegetation Index
-  3. NDWI — Normalized Difference Water Index
-  4. Histograma de intensidades (por canal)
-  5. Características de textura (contraste local)
+Transforma imagens em vetores numéricos que o classificador consegue separar.
 
-Para o dataset EuroSAT RGB:
-  - Canal 0 = Red (≈ B4 do Sentinel-2)
-  - Canal 1 = Green (≈ B3 do Sentinel-2)
-  - Canal 2 = Blue (≈ B2 do Sentinel-2)
+Índices espectrais (só são calculados se o sensor tiver as bandas exigidas):
 
-NOTA: NDVI e NDWI exigem o canal NIR (B8 do Sentinel-2), ausente no EuroSAT RGB.
-Implementamos uma aproximação baseada nos canais RGB disponíveis e calculamos
-índices derivados que capturam informação espectral equivalente.
+    NDVI  = (NIR − Red)   / (NIR + Red)      vegetação (clorofila absorve o vermelho,
+                                              a estrutura da folha reflete o NIR)
+    NDWI  = (Green − NIR) / (Green + NIR)    água (McFeeters, 1996)
+    MNDWI = (Green − SWIR1)/(Green + SWIR1)  água, separa melhor de área urbana (Xu, 2006)
+    NDBI  = (SWIR1 − NIR) / (SWIR1 + NIR)    área construída (Zha et al., 2003)
+    BSI   = ((SWIR1+Red) − (NIR+Blue)) / ((SWIR1+Red) + (NIR+Blue))   solo exposto
+
+Sentinel-2 tem todas as bandas → 5 índices. CBERS-4 MUX não tem SWIR → só NDVI e
+NDWI. O recorte "só RGB" não tem NIR → nenhum índice (não inventamos aproximações).
+
+Dois tipos de vetor:
+* por **imagem** (recorte EuroSAT 64×64): estatísticas por banda, estatísticas e
+  histograma dos índices e textura (GLCM + gradiente);
+* por **pixel** (cena do INPE): reflectância das bandas, índices e contexto local
+  (média e desvio numa janela 5×5).
 """
 
-import numpy as np
+from __future__ import annotations
+
+import sys
 from pathlib import Path
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
+
+import numpy as np
+from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import config as C  # noqa: E402
+
+EPS = 1e-6
+
+# índice: (bandas exigidas, função)
+INDEX_DEFS = {
+    "NDVI": (("nir", "red"), lambda b: _nd(b["nir"], b["red"])),
+    "NDWI": (("green", "nir"), lambda b: _nd(b["green"], b["nir"])),
+    "MNDWI": (("green", "swir1"), lambda b: _nd(b["green"], b["swir1"])),
+    "NDBI": (("swir1", "nir"), lambda b: _nd(b["swir1"], b["nir"])),
+    "BSI": (("swir1", "red", "nir", "blue"),
+            lambda b: _nd(b["swir1"] + b["red"], b["nir"] + b["blue"])),
+}
 
 
-# ─── Índices Espectrais ────────────────────────────────────────────────────────
-
-def ndvi_approx(img: np.ndarray) -> np.ndarray:
-    """
-    NDVI aproximado usando canal Red e Green como proxy do NIR.
-
-    Fórmula original: NDVI = (NIR - Red) / (NIR + Red)
-    Aproximação RGB:  NDVI_approx = (Green - Red) / (Green + Red + ε)
-
-    Justificativa: sem o canal NIR, o canal Green captura parte da reflexão
-    fotossintética e o Red captura absorção pela clorofila. A razão Green/Red
-    correlaciona-se positivamente com o NDVI real para vegetação densa.
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W, 3) com canais RGB normalizados em [0, 1]
-
-    Retorna
-    -------
-    ndarray (H, W) com valores em [-1, 1]
-    """
-    red   = img[..., 0].astype(np.float32)
-    green = img[..., 1].astype(np.float32)
-    num = green - red
-    den = green + red + 1e-8
-    return num / den
+def _nd(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Diferença normalizada (a − b) / (a + b), protegida contra divisão por zero."""
+    return (a - b) / (a + b + EPS)
 
 
-def ndwi_approx(img: np.ndarray) -> np.ndarray:
-    """
-    NDWI aproximado usando canal Green e Blue como proxy.
-
-    Fórmula original: NDWI = (Green - NIR) / (Green + NIR)
-    Aproximação RGB:  NDWI_approx = (Blue - Red) / (Blue + Red + ε)
-
-    Justificativa: a água apresenta alta reflectância no azul e baixa no
-    vermelho. Corpos d'água geram NDWI_approx positivo, enquanto vegetação
-    e solo exposto tendem a valores negativos.
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W, 3) com canais RGB normalizados em [0, 1]
-
-    Retorna
-    -------
-    ndarray (H, W) com valores em [-1, 1]
-    """
-    red  = img[..., 0].astype(np.float32)
-    blue = img[..., 2].astype(np.float32)
-    num = blue - red
-    den = blue + red + 1e-8
-    return num / den
+def roles_of(refl: np.ndarray, sensor: str) -> dict[str, np.ndarray]:
+    """Mapeia papel físico → banda (ex.: 'nir' → B08) para o sensor."""
+    info = C.SENSOR_BANDS[sensor]
+    return {role: refl[..., info["names"].index(band)] for role, band in info["roles"].items()}
 
 
-def brightness(img: np.ndarray) -> np.ndarray:
-    """
-    Brilho médio: média dos canais RGB por pixel.
-    Útil para distinguir áreas urbanas (alta reflectância geral)
-    de vegetação densa (baixo brilho no vermelho).
-    """
-    return img.mean(axis=-1)
+def available_indices(sensor: str) -> list[str]:
+    """Índices que o sensor permite calcular, conferindo as bandas exigidas."""
+    roles = C.SENSOR_BANDS[sensor]["roles"]
+    return [k for k, (need, _) in INDEX_DEFS.items() if all(r in roles for r in need)]
 
 
-def redness_index(img: np.ndarray) -> np.ndarray:
-    """
-    Índice de vermelhidão: (Red - Blue) / (Red + Blue + ε)
-    Elevado para solo exposto e áreas secas.
-    """
-    red  = img[..., 0].astype(np.float32)
-    blue = img[..., 2].astype(np.float32)
-    return (red - blue) / (red + blue + 1e-8)
-
-
-# ─── Estatísticas espectrais ──────────────────────────────────────────────────
-
-def spectral_stats(img: np.ndarray) -> np.ndarray:
-    """
-    Extrai estatísticas de intensidade por canal.
-
-    Características: [mean_R, mean_G, mean_B,
-                      std_R, std_G, std_B,
-                      min_R, min_G, min_B,
-                      max_R, max_G, max_B,
-                      median_R, median_G, median_B]
-    → 15 valores por imagem
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W, C)
-
-    Retorna
-    -------
-    ndarray (5 * C,)
-    """
-    features = []
-    for c in range(img.shape[-1]):
-        ch = img[..., c].flatten()
-        features.extend([
-            ch.mean(),
-            ch.std(),
-            ch.min(),
-            ch.max(),
-            np.median(ch),
-        ])
-    return np.array(features, dtype=np.float32)
-
-
-def histogram_features(img: np.ndarray, n_bins: int = 8) -> np.ndarray:
-    """
-    Histograma de intensidade por canal (normalizado).
-
-    Divide o intervalo [0,1] em n_bins compartimentos e conta a frequência
-    relativa de pixels em cada faixa. Captura a distribuição espectral
-    da imagem de forma compacta.
-
-    Parâmetros
-    ----------
-    img   : ndarray (H, W, C)
-    n_bins: número de compartimentos do histograma
-
-    Retorna
-    -------
-    ndarray (n_bins * C,) — histograma concatenado e normalizado
-    """
-    features = []
-    for c in range(img.shape[-1]):
-        hist, _ = np.histogram(img[..., c].flatten(), bins=n_bins, range=(0, 1))
-        hist = hist.astype(np.float32) / (hist.sum() + 1e-8)
-        features.extend(hist)
-    return np.array(features, dtype=np.float32)
+def spectral_index(refl: np.ndarray, sensor: str, name: str) -> np.ndarray:
+    """Calcula um índice; levanta erro se faltar banda (nunca aproxima)."""
+    need, fn = INDEX_DEFS[name]
+    roles = C.SENSOR_BANDS[sensor]["roles"]
+    missing = [r for r in need if r not in roles]
+    if missing:
+        raise ValueError(f"{name} exige {need}; o sensor {sensor} não tem {missing}")
+    return fn(roles_of(refl, sensor)).astype(np.float32)
 
 
 # ─── Textura ──────────────────────────────────────────────────────────────────
 
-def texture_features(img_gray: np.ndarray, window_size: int = 3) -> np.ndarray:
+GLCM_LEVELS = 16
+
+
+def glcm_features(gray: np.ndarray) -> np.ndarray:
+    """GLCM (Haralick, 1973) em lote: (N, H, W) → (N, 4).
+
+    Quantiza cada recorte em 16 níveis (percentis 1–99 do próprio recorte),
+    conta pares de vizinhos à direita e abaixo (distância 1, 0° e 90°) e
+    extrai contraste, homogeneidade, energia e correlação.
     """
-    Características de textura baseadas em variância local.
-
-    Usa a variância de intensidade em janelas deslizantes para capturar
-    homogeneidade (florestas têm baixa variância) vs. heterogeneidade
-    (áreas urbanas têm alta variância de bordas e telhados).
-
-    Parâmetros
-    ----------
-    img_gray    : ndarray (H, W) — imagem em escala de cinza
-    window_size : tamanho da janela (padrão: 3×3)
-
-    Retorna
-    -------
-    ndarray (4,) — [mean_variance, std_variance, max_variance, energy]
-    """
-    from scipy.ndimage import uniform_filter
-
-    pad = window_size // 2
-    img_padded = np.pad(img_gray, pad, mode="reflect")
-    h, w = img_gray.shape
-    variance_map = np.zeros((h, w), dtype=np.float32)
-
-    # Variância em janela deslizante (E[X²] - E[X]²)
-    mean_sq = uniform_filter(img_gray**2, size=window_size)
-    sq_mean = uniform_filter(img_gray, size=window_size) ** 2
-    variance_map = np.clip(mean_sq - sq_mean, 0, None)
-
-    return np.array([
-        variance_map.mean(),
-        variance_map.std(),
-        variance_map.max(),
-        # Energia (baixa entropia = textura homogênea)
-        1.0 - (variance_map.mean() / (variance_map.max() + 1e-8)),
-    ], dtype=np.float32)
+    n = gray.shape[0]
+    L = GLCM_LEVELS
+    lo = np.percentile(gray.reshape(n, -1), 1, axis=1)[:, None, None]
+    hi = np.percentile(gray.reshape(n, -1), 99, axis=1)[:, None, None]
+    q = np.clip(((gray - lo) / (hi - lo + EPS) * L).astype(np.int64), 0, L - 1)
+    base = (np.arange(n) * L * L)[:, None]
+    pairs = [
+        (q[:, :, :-1].reshape(n, -1), q[:, :, 1:].reshape(n, -1)),   # 0°
+        (q[:, :-1, :].reshape(n, -1), q[:, 1:, :].reshape(n, -1)),   # 90°
+    ]
+    P = np.zeros((n, L, L), dtype=np.float64)
+    for a, b in pairs:
+        for x, y in ((a, b), (b, a)):  # matriz simétrica
+            P += np.bincount((base + x * L + y).ravel(), minlength=n * L * L).reshape(n, L, L)
+    P /= P.sum(axis=(1, 2), keepdims=True)
+    i, j = np.meshgrid(np.arange(L), np.arange(L), indexing="ij")
+    contrast = (P * (i - j) ** 2).sum(axis=(1, 2))
+    homogeneity = (P / (1.0 + np.abs(i - j))).sum(axis=(1, 2))
+    energy = np.sqrt((P ** 2).sum(axis=(1, 2)))
+    mu_i = (P * i).sum(axis=(1, 2))
+    mu_j = (P * j).sum(axis=(1, 2))
+    sd_i = np.sqrt((P * (i - mu_i[:, None, None]) ** 2).sum(axis=(1, 2)))
+    sd_j = np.sqrt((P * (j - mu_j[:, None, None]) ** 2).sum(axis=(1, 2)))
+    corr = ((P * (i - mu_i[:, None, None]) * (j - mu_j[:, None, None])).sum(axis=(1, 2))
+            / (sd_i * sd_j + EPS))
+    return np.stack([contrast, homogeneity, energy, corr], axis=1).astype(np.float32)
 
 
-# ─── Feature vector completo ──────────────────────────────────────────────────
-
-def extract_features(img: np.ndarray) -> np.ndarray:
-    """
-    Extrai o vetor de características completo de uma imagem.
-
-    Componentes do vetor:
-    ┌─────────────────────────────────────────┬──────────┐
-    │ Grupo                                   │ Dim      │
-    ├─────────────────────────────────────────┼──────────┤
-    │ Estatísticas espectrais (5 × 3 canais)  │ 15       │
-    │ Histograma (8 bins × 3 canais)          │ 24       │
-    │ NDVI_approx — estatísticas              │ 5        │
-    │ NDWI_approx — estatísticas              │ 5        │
-    │ Brightness — estatísticas               │ 5        │
-    │ Redness Index — estatísticas            │ 5        │
-    │ Textura (variância local)               │ 4        │
-    ├─────────────────────────────────────────┼──────────┤
-    │ Total                                   │ 63       │
-    └─────────────────────────────────────────┴──────────┘
-
-    Parâmetros
-    ----------
-    img : ndarray (H, W, 3) normalizado em [0, 1]
-
-    Retorna
-    -------
-    ndarray (63,) — vetor de características
-    """
-    img = img.astype(np.float32)
-
-    # 1. Estatísticas espectrais (15)
-    spec = spectral_stats(img)
-
-    # 2. Histograma (24)
-    hist = histogram_features(img, n_bins=8)
-
-    # 3. Índices espectrais — cada um como mapa → estatísticas (5 cada)
-    ndvi = ndvi_approx(img)
-    ndwi = ndwi_approx(img)
-    bright = brightness(img)
-    red_idx = redness_index(img)
-
-    def _stats5(arr: np.ndarray) -> np.ndarray:
-        a = arr.flatten()
-        return np.array([a.mean(), a.std(), a.min(), a.max(), np.median(a)], dtype=np.float32)
-
-    ndvi_feat   = _stats5(ndvi)    # 5
-    ndwi_feat   = _stats5(ndwi)    # 5
-    bright_feat = _stats5(bright)  # 5
-    red_feat    = _stats5(red_idx) # 5
-
-    # 4. Textura (4)
-    gray = bright  # usa brilho médio como canal de textura
-    tex = texture_features(gray)
-
-    feature_vector = np.concatenate([
-        spec, hist, ndvi_feat, ndwi_feat, bright_feat, red_feat, tex
-    ])
-    return feature_vector
+def gradient_features(gray: np.ndarray) -> np.ndarray:
+    """Magnitude do gradiente de Sobel (bordas) e variância local 3×3: (N, 2)."""
+    gx = ndimage.sobel(gray, axis=2)
+    gy = ndimage.sobel(gray, axis=1)
+    grad = np.hypot(gx, gy).mean(axis=(1, 2))
+    m = ndimage.uniform_filter(gray, size=(1, 3, 3))
+    m2 = ndimage.uniform_filter(gray ** 2, size=(1, 3, 3))
+    lvar = np.clip(m2 - m ** 2, 0, None).mean(axis=(1, 2))
+    return np.stack([grad, lvar], axis=1).astype(np.float32)
 
 
-def extract_features_batch(X: np.ndarray, verbose: bool = True) -> np.ndarray:
-    """
-    Extrai características de um dataset completo.
-
-    Parâmetros
-    ----------
-    X : ndarray (N, H, W, C) normalizado em [0, 1]
-
-    Retorna
-    -------
-    ndarray (N, D) — matriz de features
-    """
-    n = len(X)
-    features = []
-    for i, img in enumerate(X):
-        features.append(extract_features(img))
-        if verbose and (i + 1) % 500 == 0:
-            print(f"  {i+1}/{n} imagens processadas")
-    F = np.array(features, dtype=np.float32)
-    if verbose:
-        print(f"✓ Feature matrix: {F.shape} (N={F.shape[0]}, D={F.shape[1]})")
-    return F
+def texture_band(refl: np.ndarray, sensor: str) -> np.ndarray:
+    """Banda usada na textura: NIR (realça a estrutura da vegetação) ou o brilho visível."""
+    roles = C.SENSOR_BANDS[sensor]["roles"]
+    if "nir" in roles:
+        return roles_of(refl, sensor)["nir"]
+    r = roles_of(refl, sensor)
+    return (r["red"] + r["green"] + r["blue"]) / 3.0
 
 
-# ─── Visualizações ────────────────────────────────────────────────────────────
+# ─── Vetor por imagem (recorte inteiro) ───────────────────────────────────────
 
-def plot_spectral_indices(
-    img: np.ndarray,
-    class_name: str,
-    save_path: Path | None = None,
-) -> None:
-    """
-    Visualiza imagem RGB com mapas de NDVI, NDWI e brilho.
-    """
-    ndvi  = ndvi_approx(img)
-    ndwi  = ndwi_approx(img)
-    bright = brightness(img)
-
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    fig.suptitle(f"Índices Espectrais — {class_name}", fontsize=13, fontweight="bold")
-
-    axes[0].imshow(img)
-    axes[0].set_title("RGB Original")
-    axes[0].axis("off")
-
-    im1 = axes[1].imshow(ndvi, cmap="RdYlGn", vmin=-1, vmax=1)
-    axes[1].set_title("NDVI (aprox.)")
-    axes[1].axis("off")
-    plt.colorbar(im1, ax=axes[1], fraction=0.046)
-
-    im2 = axes[2].imshow(ndwi, cmap="Blues", vmin=-1, vmax=1)
-    axes[2].set_title("NDWI (aprox.)")
-    axes[2].axis("off")
-    plt.colorbar(im2, ax=axes[2], fraction=0.046)
-
-    im3 = axes[3].imshow(bright, cmap="gray", vmin=0, vmax=1)
-    axes[3].set_title("Brilho médio")
-    axes[3].axis("off")
-    plt.colorbar(im3, ax=axes[3], fraction=0.046)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"✓ Figura salva: {save_path}")
-    plt.close()
+BAND_STATS = ["mean", "std", "p10", "p50", "p90"]
+INDEX_STATS = ["mean", "std", "p10", "p90"]
+HIST_BINS = np.array([-1.0, 0.0, 0.15, 0.3, 0.45, 0.6, 1.0])  # NDVI (ou brilho)
+TEXTURE = ["glcm_contraste", "glcm_homogeneidade", "glcm_energia", "glcm_correlacao",
+           "gradiente_sobel", "variancia_local"]
 
 
-def plot_feature_importance(
-    feature_names: list[str],
-    importances: np.ndarray,
-    top_n: int = 20,
-    save_path: Path | None = None,
-) -> None:
-    """
-    Plota importância das features do Random Forest.
-    """
-    idx = np.argsort(importances)[::-1][:top_n]
-    top_names = [feature_names[i] for i in idx]
-    top_vals  = importances[idx]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars = ax.barh(range(top_n), top_vals[::-1], color="#3498DB", alpha=0.85)
-    ax.set_yticks(range(top_n))
-    ax.set_yticklabels(top_names[::-1], fontsize=9)
-    ax.set_xlabel("Importância (Gini)")
-    ax.set_title(f"Top {top_n} Features mais Importantes — Random Forest", fontweight="bold")
-    ax.spines[["top", "right"]].set_visible(False)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"✓ Figura salva: {save_path}")
-    plt.close()
-
-
-def build_feature_names() -> list[str]:
-    """Retorna lista de nomes das features na mesma ordem de extract_features."""
-    names = []
-    bands = ["Red", "Green", "Blue"]
-    stats = ["mean", "std", "min", "max", "median"]
-
-    # Estatísticas espectrais
-    for b in bands:
-        for s in stats:
-            names.append(f"{b}_{s}")
-
-    # Histograma
-    for b in bands:
-        for i in range(8):
-            names.append(f"hist_{b}_bin{i}")
-
-    # Índices
-    for idx_name in ["NDVI", "NDWI", "Brilho", "RI"]:
-        for s in stats:
-            names.append(f"{idx_name}_{s}")
-
-    # Textura
-    names.extend(["tex_var_mean", "tex_var_std", "tex_var_max", "tex_energy"])
-
+def patch_feature_names(sensor: str) -> list[str]:
+    bands = C.SENSOR_BANDS[sensor]["names"]
+    names = [f"{b}_{s}" for b in bands for s in BAND_STATS]
+    idx = available_indices(sensor)
+    names += [f"{k}_{s}" for k in idx for s in INDEX_STATS]
+    hist_src = "NDVI" if "NDVI" in idx else "brilho"
+    names += [f"hist_{hist_src}_{i}" for i in range(len(HIST_BINS) - 1)]
+    names += TEXTURE
     return names
 
 
-if __name__ == "__main__":
-    print("feature_extraction.py — módulo de extração de características")
-    names = build_feature_names()
-    print(f"  Vetor de features: {len(names)} dimensões")
-    for i, n in enumerate(names):
-        print(f"    [{i:02d}] {n}")
+def patch_features(refl: np.ndarray, sensor: str) -> np.ndarray:
+    """Vetor de características de um lote de recortes: (N, H, W, B) → (N, D)."""
+    if refl.ndim == 3:
+        refl = refl[None]
+    n = refl.shape[0]
+    flat = refl.reshape(n, -1, refl.shape[-1])
+    q = np.percentile(flat, [10, 50, 90], axis=1)  # (3, N, B)
+    band = np.stack([flat.mean(axis=1), flat.std(axis=1), q[0], q[1], q[2]], axis=2)  # (N,B,5)
+    feats = [band.reshape(n, -1)]
+
+    idx = available_indices(sensor)
+    for k in idx:
+        v = spectral_index(refl, sensor, k).reshape(n, -1)
+        p = np.percentile(v, [10, 90], axis=1)
+        feats.append(np.stack([v.mean(axis=1), v.std(axis=1), p[0], p[1]], axis=1))
+
+    if "NDVI" in idx:
+        h_src, bins = spectral_index(refl, sensor, "NDVI").reshape(n, -1), HIST_BINS
+    else:
+        h_src = texture_band(refl, sensor).reshape(n, -1)
+        bins = np.array([0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 2.0])
+    hist = np.stack([np.histogram(row, bins=bins)[0] for row in h_src]).astype(np.float32)
+    feats.append(hist / h_src.shape[1])
+
+    gray = texture_band(refl, sensor).astype(np.float32)
+    feats += [glcm_features(gray), gradient_features(gray)]
+    return np.concatenate(feats, axis=1).astype(np.float32)
+
+
+# ─── Vetor por pixel (cena) ───────────────────────────────────────────────────
+
+def pixel_feature_names(sensor: str) -> list[str]:
+    names = list(C.SENSOR_BANDS[sensor]["names"])
+    idx = available_indices(sensor)
+    names += idx
+    ctx = "NDVI" if "NDVI" in idx else "brilho"
+    tex = "NIR" if "nir" in C.SENSOR_BANDS[sensor]["roles"] else "brilho"
+    names += [f"{ctx}_media5x5", f"{ctx}_desvio5x5", f"{tex}_media5x5", f"{tex}_desvio5x5"]
+    return names
+
+
+def pixel_features(refl: np.ndarray, sensor: str, size: int = 5) -> np.ndarray:
+    """Cubo de características por pixel: (H, W, B) → (H, W, D).
+
+    O contexto 5×5 (média e desvio local) dá ao classificador por pixel uma
+    noção de textura: um pixel de telhado cercado de ruas tem desvio alto; um
+    pixel de açude, desvio quase zero.
+    """
+    layers = [refl[..., b] for b in range(refl.shape[-1])]
+    idx = available_indices(sensor)
+    ind = {k: spectral_index(refl, sensor, k) for k in idx}
+    layers += [ind[k] for k in idx]
+    ctx = ind.get("NDVI", texture_band(refl, sensor))
+    nir = texture_band(refl, sensor)
+    for img in (ctx, nir):
+        m = ndimage.uniform_filter(img, size=size)
+        m2 = ndimage.uniform_filter(img * img, size=size)
+        layers += [m, np.sqrt(np.clip(m2 - m * m, 0, None))]
+    return np.stack(layers, axis=-1).astype(np.float32)
+
+
+# ─── Explicação legível de um vetor ───────────────────────────────────────────
+
+def describe(vector: np.ndarray, names: list[str], keys: list[str] | None = None) -> dict:
+    """Dicionário nome → valor (para a API e para os slides)."""
+    d = {n: float(v) for n, v in zip(names, vector)}
+    return {k: d[k] for k in keys if k in d} if keys else d

@@ -1,0 +1,67 @@
+{
+  "seconds": 12.4,
+  "n_windows": 5850,
+  "agreement_macro": 0.6276742581090408,
+  "n_compared": 5796,
+  "confusion_macro": [
+    [
+      3102,
+      1359,
+      485,
+      187
+    ],
+    [
+      13,
+      46,
+      2,
+      0
+    ],
+    [
+      0,
+      81,
+      310,
+      1
+    ],
+    [
+      0,
+      15,
+      15,
+      180
+    ]
+  ],
+  "macro_names": [
+    "Vegetação",
+    "Área agrícola",
+    "Área urbana",
+    "Água"
+  ],
+  "class_counts": {
+    "AnnualCrop": 315,
+    "Forest": 0,
+    "HerbaceousVegetation": 3116,
+    "Highway": 564,
+    "Industrial": 66,
+    "Pasture": 3,
+    "PermanentCrop": 1202,
+    "Residential": 199,
+    "River": 353,
+    "SeaLake": 32
+  },
+  "window_px": 64,
+  "window_m": 640,
+  "stride_px": 32,
+  "mean_confidence": 0.5629595441595442,
+  "model": "rf_eurosat_ms",
+  "scene": {
+    "satellite": "Sentinel-2B",
+    "sensor": "MSI",
+    "level": "L1C (TOA)",
+    "date": "2024-09-01",
+    "item": "S2B_MSIL1C_20240901T125309_N0511_R052_T24MXV_20240901T132229",
+    "collection": "S2_L1C_BUNDLE-1",
+    "bands": 13,
+    "resolution_m": 10,
+    "provider": "INPE — Brazil Data Cube"
+  },
+  "note": "Modelo treinado no EuroSAT (Europa) aplicado sem ajuste à caatinga: mede a transferência entre domínios, não a acurácia do classificador."
+}

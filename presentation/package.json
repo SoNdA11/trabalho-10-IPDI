@@ -1,0 +1,14 @@
+{
+  "name": "trab10-apresentacao",
+  "private": true,
+  "type": "module",
+  "description": "Seminário do Trabalho 10 (Reveal.js offline).",
+  "scripts": {
+    "dados": "../.venv/bin/python scripts/exportar_dados.py",
+    "pdf": "node scripts/exportar_pdf.mjs",
+    "miniaturas": "node scripts/gerar_miniaturas.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.48.2"
+  }
+}

@@ -1,0 +1,545 @@
+{
+  "experiment": "eurosat",
+  "level": "imagem inteira",
+  "dataset": "EuroSAT MS (Sentinel-2 L1C, 13 bandas, 64×64 px)",
+  "classes": [
+    "AnnualCrop",
+    "Forest",
+    "HerbaceousVegetation",
+    "Highway",
+    "Industrial",
+    "Pasture",
+    "PermanentCrop",
+    "Residential",
+    "River",
+    "SeaLake"
+  ],
+  "class_counts": [
+    3000,
+    3000,
+    3000,
+    2500,
+    2500,
+    2000,
+    2500,
+    3000,
+    2500,
+    3000
+  ],
+  "n_total": 27000,
+  "n_train": 19285,
+  "n_val": 3857,
+  "n_test": 3858,
+  "split": "espacial — StratifiedGroupKFold por células de 0,25°",
+  "n_groups": 2047,
+  "model": "RandomForestClassifier",
+  "n_estimators": 300,
+  "params": {
+    "max_features": "sqrt",
+    "min_samples_leaf": 1
+  },
+  "tuning": [
+    {
+      "max_features": "sqrt",
+      "min_samples_leaf": 1,
+      "val_macro_f1": 0.9256872046082079,
+      "seconds": 9.9
+    },
+    {
+      "max_features": "sqrt",
+      "min_samples_leaf": 3,
+      "val_macro_f1": 0.9200057688019054,
+      "seconds": 9.4
+    },
+    {
+      "max_features": 0.3,
+      "min_samples_leaf": 1,
+      "val_macro_f1": 0.9204081251482158,
+      "seconds": 37.6
+    },
+    {
+      "max_features": 0.3,
+      "min_samples_leaf": 3,
+      "val_macro_f1": 0.9197541749049819,
+      "seconds": 36.1
+    }
+  ],
+  "feature_dim": 97,
+  "feature_dim_rgb": 27,
+  "train_seconds": 15.11,
+  "predict_ms_per_image": 0.017,
+  "test": {
+    "n": 3858,
+    "accuracy": 0.9315707620528771,
+    "kappa": 0.9238526046027474,
+    "macro_precision": 0.9291807870241078,
+    "macro_recall": 0.9300111212976887,
+    "macro_f1": 0.9291127049034248,
+    "weighted_f1": 0.9314889845508977,
+    "per_class": {
+      "AnnualCrop": {
+        "precision": 0.9553805774278216,
+        "recall": 0.8484848484848485,
+        "f1": 0.8987654320987655,
+        "support": 429
+      },
+      "Forest": {
+        "precision": 1.0,
+        "recall": 0.9953379953379954,
+        "f1": 0.9976635514018691,
+        "support": 429
+      },
+      "HerbaceousVegetation": {
+        "precision": 0.9088888888888889,
+        "recall": 0.9533799533799534,
+        "f1": 0.9306029579067122,
+        "support": 429
+      },
+      "Highway": {
+        "precision": 0.8184357541899442,
+        "recall": 0.8184357541899442,
+        "f1": 0.8184357541899442,
+        "support": 358
+      },
+      "Industrial": {
+        "precision": 0.9452449567723343,
+        "recall": 0.9187675070028011,
+        "f1": 0.9318181818181818,
+        "support": 357
+      },
+      "Pasture": {
+        "precision": 0.9115646258503401,
+        "recall": 0.9403508771929825,
+        "f1": 0.92573402417962,
+        "support": 285
+      },
+      "PermanentCrop": {
+        "precision": 0.8590425531914894,
+        "recall": 0.9047619047619048,
+        "f1": 0.8813096862210096,
+        "support": 357
+      },
+      "Residential": {
+        "precision": 0.9399538106235565,
+        "recall": 0.9509345794392523,
+        "f1": 0.9454123112659698,
+        "support": 428
+      },
+      "River": {
+        "precision": 0.9532967032967034,
+        "recall": 0.9719887955182073,
+        "f1": 0.9625520110957004,
+        "support": 357
+      },
+      "SeaLake": {
+        "precision": 1.0,
+        "recall": 0.9976689976689976,
+        "f1": 0.9988331388564761,
+        "support": 429
+      }
+    },
+    "confusion_matrix": [
+      [
+        364,
+        0,
+        11,
+        10,
+        0,
+        2,
+        42,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        427,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        3,
+        0,
+        409,
+        6,
+        0,
+        8,
+        2,
+        0,
+        1,
+        0
+      ],
+      [
+        4,
+        0,
+        4,
+        293,
+        13,
+        14,
+        5,
+        13,
+        12,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        14,
+        328,
+        0,
+        0,
+        13,
+        2,
+        0
+      ],
+      [
+        0,
+        0,
+        8,
+        7,
+        0,
+        268,
+        2,
+        0,
+        0,
+        0
+      ],
+      [
+        10,
+        0,
+        17,
+        5,
+        0,
+        2,
+        323,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        14,
+        4,
+        0,
+        2,
+        407,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        8,
+        2,
+        0,
+        0,
+        0,
+        347,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        428
+      ]
+    ],
+    "labels": [
+      "AnnualCrop",
+      "Forest",
+      "HerbaceousVegetation",
+      "Highway",
+      "Industrial",
+      "Pasture",
+      "PermanentCrop",
+      "Residential",
+      "River",
+      "SeaLake"
+    ]
+  },
+  "test_macro": {
+    "n": 3858,
+    "accuracy": 0.9655261793675479,
+    "kappa": 0.9537019016170146,
+    "macro_precision": 0.9659403133654857,
+    "macro_recall": 0.9675379114452725,
+    "macro_f1": 0.9666842643344584,
+    "weighted_f1": 0.9654847234720468,
+    "per_class": {
+      "Vegetação": {
+        "precision": 0.9543899657924744,
+        "recall": 0.9755244755244755,
+        "f1": 0.9648414985590779,
+        "support": 858
+      },
+      "Área agrícola": {
+        "precision": 0.9638439581351094,
+        "recall": 0.945845004668534,
+        "f1": 0.9547596606974552,
+        "support": 1071
+      },
+      "Área urbana": {
+        "precision": 0.9657293497363796,
+        "recall": 0.9615048118985127,
+        "f1": 0.9636124506795265,
+        "support": 1143
+      },
+      "Água": {
+        "precision": 0.9797979797979798,
+        "recall": 0.9872773536895675,
+        "f1": 0.9835234474017744,
+        "support": 786
+      }
+    },
+    "confusion_matrix": [
+      [
+        837,
+        13,
+        7,
+        1
+      ],
+      [
+        36,
+        1013,
+        22,
+        0
+      ],
+      [
+        4,
+        25,
+        1099,
+        15
+      ],
+      [
+        0,
+        0,
+        10,
+        776
+      ]
+    ],
+    "labels": [
+      "Vegetação",
+      "Área agrícola",
+      "Área urbana",
+      "Água"
+    ]
+  },
+  "random_split_test": {
+    "accuracy": 0.9401244167962675,
+    "macro_f1": 0.9367353644077501,
+    "kappa": 0.9333516307648126
+  },
+  "comparisons": {
+    "Random Forest — 13 bandas": {
+      "accuracy": 0.9315707620528771,
+      "macro_f1": 0.9291127049034248,
+      "kappa": 0.9238526046027474,
+      "train_seconds": 15.1,
+      "predict_ms_per_1000": 16.8,
+      "per_class_f1": {
+        "AnnualCrop": 0.8987654320987655,
+        "Forest": 0.9976635514018691,
+        "HerbaceousVegetation": 0.9306029579067122,
+        "Highway": 0.8184357541899442,
+        "Industrial": 0.9318181818181818,
+        "Pasture": 0.92573402417962,
+        "PermanentCrop": 0.8813096862210096,
+        "Residential": 0.9454123112659698,
+        "River": 0.9625520110957004,
+        "SeaLake": 0.9988331388564761
+      }
+    },
+    "SVM (RBF) — 13 bandas": {
+      "accuracy": 0.956713322965267,
+      "macro_f1": 0.954861539729319,
+      "kappa": 0.9518235694867203,
+      "train_seconds": 2.4,
+      "predict_ms_per_1000": 388.8,
+      "per_class_f1": {
+        "AnnualCrop": 0.9396449704142011,
+        "Forest": 0.9988358556461001,
+        "HerbaceousVegetation": 0.958139534883721,
+        "Highway": 0.8735632183908046,
+        "Industrial": 0.9565217391304348,
+        "Pasture": 0.9581881533101045,
+        "PermanentCrop": 0.9281767955801105,
+        "Residential": 0.96878612716763,
+        "River": 0.9667590027700831,
+        "SeaLake": 1.0
+      }
+    },
+    "k-NN (k=7) — 13 bandas": {
+      "accuracy": 0.9105754276827371,
+      "macro_f1": 0.905825909629397,
+      "kappa": 0.9004725090086284,
+      "train_seconds": 0.0,
+      "predict_ms_per_1000": 60.0,
+      "per_class_f1": {
+        "AnnualCrop": 0.8856088560885609,
+        "Forest": 0.9861111111111112,
+        "HerbaceousVegetation": 0.9183673469387755,
+        "Highway": 0.7338345864661654,
+        "Industrial": 0.9186206896551724,
+        "Pasture": 0.8892794376098418,
+        "PermanentCrop": 0.8507265521796565,
+        "Residential": 0.9253731343283582,
+        "River": 0.9538461538461539,
+        "SeaLake": 0.9964912280701754
+      }
+    },
+    "Random Forest — só RGB": {
+      "accuracy": 0.8564022809745983,
+      "macro_f1": 0.8535643832081666,
+      "kappa": 0.8402770034910905,
+      "train_seconds": 6.6,
+      "predict_ms_per_1000": 24.8,
+      "per_class_f1": {
+        "AnnualCrop": 0.7969151670951157,
+        "Forest": 0.9836448598130841,
+        "HerbaceousVegetation": 0.7918660287081339,
+        "Highway": 0.6564885496183206,
+        "Industrial": 0.9573863636363636,
+        "Pasture": 0.9103448275862069,
+        "PermanentCrop": 0.7242990654205608,
+        "Residential": 0.9426900584795321,
+        "River": 0.7848443843031123,
+        "SeaLake": 0.9871645274212368
+      }
+    }
+  },
+  "rgb_jpg_calibration": {
+    "slope": [
+      0.0010947885435432128,
+      0.0010764391060621565,
+      0.0010656609120698788
+    ],
+    "intercept": [
+      -0.0021143124312001304,
+      -0.0004575345638710184,
+      0.0006905475570713991
+    ],
+    "r": [
+      0.9980398039991987,
+      0.9987135803513297,
+      0.9934153358842904
+    ]
+  },
+  "feature_importance": [
+    {
+      "name": "gradiente_sobel",
+      "importance": 0.04789663778548525
+    },
+    {
+      "name": "glcm_homogeneidade",
+      "importance": 0.04143852577528396
+    },
+    {
+      "name": "B02_std",
+      "importance": 0.03367772750229257
+    },
+    {
+      "name": "glcm_correlacao",
+      "importance": 0.030103994510465457
+    },
+    {
+      "name": "MNDWI_std",
+      "importance": 0.026374130701191312
+    },
+    {
+      "name": "NDWI_p90",
+      "importance": 0.025274472764160703
+    },
+    {
+      "name": "NDWI_std",
+      "importance": 0.025130363620352415
+    },
+    {
+      "name": "B04_p90",
+      "importance": 0.020755525139789552
+    },
+    {
+      "name": "NDVI_p10",
+      "importance": 0.02049947326680485
+    },
+    {
+      "name": "variancia_local",
+      "importance": 0.02001807599631911
+    },
+    {
+      "name": "MNDWI_mean",
+      "importance": 0.018769328131069737
+    },
+    {
+      "name": "MNDWI_p90",
+      "importance": 0.018724602063858196
+    },
+    {
+      "name": "hist_NDVI_0",
+      "importance": 0.018650719248437003
+    },
+    {
+      "name": "B04_std",
+      "importance": 0.0185967105903518
+    },
+    {
+      "name": "glcm_contraste",
+      "importance": 0.017496183150497405
+    },
+    {
+      "name": "B03_std",
+      "importance": 0.017032955421828328
+    },
+    {
+      "name": "B09_p50",
+      "importance": 0.01590288190335939
+    },
+    {
+      "name": "B01_std",
+      "importance": 0.01581610888066523
+    },
+    {
+      "name": "NDVI_std",
+      "importance": 0.01553617306171161
+    },
+    {
+      "name": "B8A_mean",
+      "importance": 0.013987698447303918
+    },
+    {
+      "name": "B02_p90",
+      "importance": 0.01367535323818507
+    },
+    {
+      "name": "glcm_energia",
+      "importance": 0.013598153990791886
+    },
+    {
+      "name": "hist_NDVI_1",
+      "importance": 0.013441270942872882
+    },
+    {
+      "name": "B11_p10",
+      "importance": 0.01327240328316903
+    },
+    {
+      "name": "hist_NDVI_2",
+      "importance": 0.012977989289409388
+    }
+  ]
+}

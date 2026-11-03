@@ -3,15 +3,24 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
 
-# Data & models (large/generated)
+# Dados brutos e intermediários (baixados/gerados por src/data_loader.py e src/train.py)
 data/raw/
 data/processed/
+
+# Modelos treinados (gerados por src/train.py, ~150 MB)
 models/*.joblib
-results/
 
-# OS
+# Resultados volumosos (as métricas JSON ficam versionadas; as figuras vão para presentation/img)
+results/figures/
+results/predictions/
+results/metrics/*.npz
+
+# Apresentação
+presentation/node_modules/
+presentation/*.pdf
+
+# SO
 .DS_Store
-
-# Logs
 *.log

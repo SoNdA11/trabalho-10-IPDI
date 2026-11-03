@@ -1,353 +1,282 @@
 """
-predict.py — Inferência e geração de mapas de classificação
+predict.py — Etapa 8: inferência e geração dos mapas de classificação.
 
-Funções:
-  - classify_image      : classifica uma imagem individual
-  - classify_batch      : classifica lote de imagens
-  - generate_class_map  : gera mapa colorido de classificação
-  - classify_from_path  : carrega e classifica imagem a partir do caminho
+Três granularidades, todas usando os modelos realmente treinados:
+
+* imagem inteira  `classify_chip`: um recorte 64×64 → UMA classe (EuroSAT).
+* por pixel       `classify_window` / `classify_scene`: cada pixel da cena do
+                  INPE → uma classe; o resultado é um mapa temático.
+* por região      `region_map`: janela deslizante de 64×64 px sobre a cena
+                  Sentinel-2; cada janela é classificada pelo modelo do EuroSAT
+                  (treinado na Europa) → mapa em blocos.
+
+Uso:
+    python src/predict.py      # gera o mapa por região e o compara à referência
 """
 
-import json
+from __future__ import annotations
+
 import base64
 import io
-import numpy as np
-import joblib
-from pathlib import Path
-from PIL import Image
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-
+import json
 import sys
+import time
+from functools import lru_cache
+from pathlib import Path
+
+import joblib
+import numpy as np
+from PIL import Image
+
 sys.path.insert(0, str(Path(__file__).parent))
 
-from data_loader import CLASS_NAMES, CLASS_COLORS, MACRO_CLASSES, MACRO_COLORS
-from preprocessing import preprocess_dataset, normalize_minmax
-from feature_extraction import extract_features
+import config as C  # noqa: E402
+import data_loader as D  # noqa: E402
+import feature_extraction as FE  # noqa: E402
+import preprocessing as P  # noqa: E402
 
-# ─── Caminhos ─────────────────────────────────────────────────────────────────
-
-ROOT    = Path(__file__).parent.parent
-MODELS  = ROOT / "models"
-RESULTS = ROOT / "results"
-FIGURES = RESULTS / "figures"
-PREDS   = RESULTS / "predictions"
-
-MODEL_PATH = MODELS / "random_forest.joblib"
-METRICS_PATH = ROOT / "results" / "metrics" / "metrics.json"
+RGB_JPG_CAL = C.DATA_PROCESSED / "rgb_jpg_calibration.json"
 
 
-# ─── Carregamento do modelo ───────────────────────────────────────────────────
+# ─── Modelos ──────────────────────────────────────────────────────────────────
 
-_model = None
-_metrics = None
-
-
-def load_model():
-    """Carrega o modelo Random Forest salvo em disco (singleton)."""
-    global _model
-    if _model is None:
-        if not MODEL_PATH.exists():
-            raise FileNotFoundError(
-                f"Modelo não encontrado: {MODEL_PATH}\n"
-                "Execute primeiro: python src/train.py"
-            )
-        _model = joblib.load(MODEL_PATH)
-    return _model
+@lru_cache(maxsize=None)
+def load_bundle(name: str) -> dict:
+    path = C.MODELS / f"{name}.joblib"
+    if not path.exists():
+        raise FileNotFoundError(f"Modelo {path.name} não encontrado. Execute: python src/train.py")
+    return joblib.load(path)
 
 
-def load_metrics() -> dict:
-    """Carrega métricas salvas em disco."""
-    global _metrics
-    if _metrics is None:
-        if not METRICS_PATH.exists():
-            return {}
-        with open(METRICS_PATH) as f:
-            _metrics = json.load(f)
-    return _metrics
+def model_available(name: str) -> bool:
+    return (C.MODELS / f"{name}.joblib").exists()
 
 
-# ─── Classificação ────────────────────────────────────────────────────────────
+# ─── Imagem inteira (EuroSAT) ─────────────────────────────────────────────────
 
-def classify_image(img: np.ndarray) -> dict:
+def classify_chip(dn: np.ndarray, top_features: int = 12) -> dict:
+    """Classifica um recorte (H, W, 13) em DN do Sentinel-2 L1C (escala EuroSAT)."""
+    bundle = load_bundle("rf_eurosat_ms")
+    refl = P.fix_invalid(P.to_reflectance(dn, "sentinel2"))
+    t0 = time.perf_counter()
+    vec = FE.patch_features(refl, "sentinel2")
+    proba = bundle["model"].predict_proba(vec)[0]
+    ms = (time.perf_counter() - t0) * 1000
+    return _chip_result(bundle, vec[0], proba, ms, top_features, refl, "sentinel2")
+
+
+def classify_rgb(img_uint8: np.ndarray, top_features: int = 12) -> dict:
+    """Classifica uma imagem RGB comum (JPG/PNG) com o modelo "só RGB".
+
+    O JPG não traz reflectância: convertemos os níveis 0–255 com a calibração
+    linear estimada nos pares EuroSAT RGB × EuroSAT MS (mesmos recortes).
     """
-    Classifica uma imagem (H, W, 3) ou (H, W, C).
+    bundle = load_bundle("rf_eurosat_rgb")
+    cal = json.loads(RGB_JPG_CAL.read_text()) if RGB_JPG_CAL.exists() else {
+        "slope": [1 / 255 * 0.275] * 3, "intercept": [0.0] * 3}
+    x = img_uint8[..., :3].astype(np.float32)
+    refl = np.stack([x[..., i] * cal["slope"][i] + cal["intercept"][i] for i in range(3)], axis=-1)
+    refl = P.fix_invalid(refl)
+    t0 = time.perf_counter()
+    vec = FE.patch_features(refl, "rgb")
+    proba = bundle["model"].predict_proba(vec)[0]
+    ms = (time.perf_counter() - t0) * 1000
+    return _chip_result(bundle, vec[0], proba, ms, top_features, refl, "rgb")
 
-    Parâmetros
-    ----------
-    img : ndarray — imagem normalizada em [0, 1]
 
-    Retorna
-    -------
-    dict com:
-        class_index    : int — índice previsto
-        class_name     : str — nome da classe
-        macro_class    : str — macro-categoria
-        probabilities  : dict {class_name: prob}
-        color          : str — cor hex da classe
-    """
-    clf = load_model()
-    metrics = load_metrics()
-    active_classes = metrics.get("class_names", CLASS_NAMES)
-
-    # Garante 3 canais (RGB)
-    if img.ndim == 2:
-        img = np.stack([img, img, img], axis=-1)
-    if img.shape[-1] > 3:
-        img = img[..., :3]
-
-    from preprocessing import fix_invalid_values
-    img_norm = fix_invalid_values(img.astype(np.float32))
-    fv = extract_features(img_norm).reshape(1, -1)
-
-    pred_idx = int(clf.predict(fv)[0])
-    probas = clf.predict_proba(fv)[0]
-
-    # Mapeia índice de treino → nome de classe
-    pred_name = CLASS_NAMES[pred_idx] if pred_idx < len(CLASS_NAMES) else "Desconhecido"
-
-    # Probas por classe ativa (as usadas no treino)
-    proba_dict = {}
-    for i, cls in enumerate(active_classes):
-        proba_dict[cls] = float(probas[i]) if i < len(probas) else 0.0
-
-    return {
-        "class_index": pred_idx,
-        "class_name": pred_name,
-        "macro_class": MACRO_CLASSES.get(pred_name, "Desconhecido"),
-        "probabilities": proba_dict,
-        "color": CLASS_COLORS.get(pred_name, "#95A5A6"),
+def _chip_result(bundle, vec, proba, ms, top_features, refl, sensor) -> dict:
+    classes = bundle["classes"]
+    k = int(np.argmax(proba))
+    names = bundle["feature_names"]
+    imp = bundle["model"].feature_importances_
+    order = np.argsort(imp)[::-1][:top_features]
+    cls = classes[k]
+    out = {
+        "model": "rf_eurosat_ms" if sensor == "sentinel2" else "rf_eurosat_rgb",
+        "class_name": cls, "class_pt": C.EUROSAT_PT[cls], "macro_class": C.EUROSAT_TO_MACRO[cls],
+        "color": C.EUROSAT_COLORS[cls], "confidence": float(proba[k]),
+        "probabilities": {c: float(p) for c, p in zip(classes, proba)},
+        "inference_ms": round(ms, 2), "n_features": len(names),
+        "features": [{"name": names[i], "value": float(vec[i]), "importance": float(imp[i])}
+                     for i in order],
     }
+    if sensor == "sentinel2":
+        for idx in FE.available_indices(sensor):
+            out.setdefault("indices", {})[idx] = float(FE.spectral_index(refl, sensor, idx).mean())
+    return out
 
 
-def classify_batch(X: np.ndarray) -> list[dict]:
-    """Classifica lote de imagens."""
-    return [classify_image(img) for img in X]
+# ─── Renderização ─────────────────────────────────────────────────────────────
+
+def hex_rgb(h: str) -> tuple[int, int, int]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def classify_from_path(img_path: str | Path, img_size: int = 64) -> dict:
-    """
-    Carrega imagem do disco e classifica.
+def labels_to_rgb(labels: np.ndarray, classes: list[str], colors: dict,
+                  valid: np.ndarray | None = None, background=(20, 24, 33)) -> np.ndarray:
+    lut = np.array([hex_rgb(colors[c]) for c in classes] + [background], dtype=np.uint8)
+    lab = labels.astype(np.int64).copy()
+    if valid is not None:
+        lab[~valid] = len(classes)
+    lab[(lab < 0) | (lab > len(classes))] = len(classes)
+    return lut[lab]
 
-    Parâmetros
-    ----------
-    img_path : str ou Path — caminho para imagem PNG/JPG
-    img_size : tamanho para redimensionamento
 
-    Retorna
-    -------
-    dict com resultado da classificação + imagem base64
-    """
-    pil = Image.open(img_path).convert("RGB")
-    if pil.size != (img_size, img_size):
-        pil = pil.resize((img_size, img_size), Image.LANCZOS)
-
-    img = np.array(pil).astype(np.float32) / 255.0
-    result = classify_image(img)
-
-    # Codifica imagem em base64 para a API
+def png_b64(arr: np.ndarray, max_side: int | None = None, nearest: bool = False) -> str:
+    """PNG em base64; `nearest=True` para mapas temáticos (não mistura cores de classes)."""
+    im = Image.fromarray(arr)
+    if max_side and max(im.size) > max_side:
+        im.thumbnail((max_side, max_side), Image.NEAREST if nearest else Image.LANCZOS)
     buf = io.BytesIO()
-    pil.save(buf, format="PNG")
-    result["image_b64"] = base64.b64encode(buf.getvalue()).decode()
-    return result
+    im.save(buf, format="PNG", optimize=True)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
-def classify_from_bytes(file_bytes: bytes, img_size: int = 64) -> dict:
+# ─── Cenas do INPE (por pixel) ────────────────────────────────────────────────
+
+@lru_cache(maxsize=2)
+def scene_cache(name: str) -> dict:
+    """Reflectância tratada + rótulos de referência, em memória (para a API)."""
+    scene = D.load_scene(name)
+    refl, valid = P.scene_reflectance(scene)
+    from train import scene_labels
+    labels = scene_labels(scene["ref"], valid)
+    tc, limits = P.composite(refl, scene["sensor"], "cor_verdadeira", valid=valid)
+    return dict(scene=scene, refl=refl, valid=valid, labels=labels, truecolor=tc,
+                tc_limits=limits, sensor=scene["sensor"])
+
+
+def classify_window(name: str, x0: int, y0: int, size: int = 256, majority: bool = True) -> dict:
+    """Classifica pixel a pixel uma janela da cena (em tempo real)."""
+    sc = scene_cache(name)
+    bundle = load_bundle(f"rf_{name}_pixel")
+    h, w = sc["valid"].shape
+    size = int(min(size, h, w))
+    x0, y0 = int(np.clip(x0, 0, w - size)), int(np.clip(y0, 0, h - size))
+    m = 4  # margem para a janela 5×5 e o filtro de moda
+    ya, yb, xa, xb = max(0, y0 - m), min(h, y0 + size + m), max(0, x0 - m), min(w, x0 + size + m)
+    t0 = time.perf_counter()
+    feats = FE.pixel_features(sc["refl"][ya:yb, xa:xb], sc["sensor"])
+    valid = sc["valid"][ya:yb, xa:xb]
+    lab = np.zeros(valid.shape, dtype=np.uint8)
+    lab[valid] = bundle["model"].predict(feats[valid])
+    if majority:
+        lab = P.majority_filter(lab, len(C.LANDCOVER_CLASSES), 3, valid)
+    ms = (time.perf_counter() - t0) * 1000
+    sl = (slice(y0 - ya, y0 - ya + size), slice(x0 - xa, x0 - xa + size))
+    lab, valid, feats = lab[sl], valid[sl], feats[sl]
+    ref = sc["labels"][y0:y0 + size, x0:x0 + size]
+    has_ref = ref >= 0
+    agree = float((lab[has_ref] == ref[has_ref]).mean()) if has_ref.any() else None
+    return dict(x0=x0, y0=y0, size=size, labels=lab, valid=valid, ref=ref, feats=feats,
+                agreement=agree, ms=round(ms, 1), feature_names=bundle["feature_names"])
+
+
+def classify_scene(name: str, majority: bool = True) -> dict:
+    """Classifica todos os pixels válidos da cena (≈30 s no Sentinel-2)."""
+    sc = scene_cache(name)
+    bundle = load_bundle(f"rf_{name}_pixel")
+    t0 = time.perf_counter()
+    h, w = sc["valid"].shape
+    lab = np.zeros((h, w), dtype=np.uint8)
+    rows = 256  # em faixas, para não estourar a memória com o cubo de características
+    for y in range(0, h, rows):
+        ya, yb = max(0, y - 4), min(h, y + rows + 4)
+        feats = FE.pixel_features(sc["refl"][ya:yb], sc["sensor"])
+        v = sc["valid"][ya:yb]
+        part = np.zeros(v.shape, dtype=np.uint8)
+        part[v] = bundle["model"].predict(feats[v])
+        lab[y:min(h, y + rows)] = part[y - ya:y - ya + min(rows, h - y)]
+    if majority:
+        lab = P.majority_filter(lab, len(C.LANDCOVER_CLASSES), 3, sc["valid"])
+    secs = time.perf_counter() - t0
+    has_ref = sc["labels"] >= 0
+    agree = float((lab[has_ref] == sc["labels"][has_ref]).mean())
+    return dict(labels=lab, valid=sc["valid"], seconds=round(secs, 1), agreement=agree,
+                n_pixels=int(sc["valid"].sum()))
+
+
+# ─── Por região: janela deslizante com o modelo do EuroSAT ───────────────────
+
+def region_map(window: int = 64, stride: int = 32) -> dict:
+    """Classifica a cena S2 em janelas 64×64 (640 m) com o modelo do EuroSAT.
+
+    O DN do L1C atual é harmonizado (−1000) para a escala do EuroSAT. Cada
+    janela recebe uma classe; a comparação com a referência usa as macro-classes
+    e a classe WorldCover majoritária da janela.
     """
-    Classifica imagem a partir de bytes (upload HTTP).
+    bundle = load_bundle("rf_eurosat_ms")
+    scene = D.load_scene("s2")
+    dn = P.harmonize_l1c(scene["dn"])
+    valid = P.valid_mask(scene["dn"], "sentinel2")
+    from train import scene_labels
+    ref = scene_labels(scene["ref"], valid)
+    h, w, _ = dn.shape
+    ys = list(range(0, h - window + 1, stride))
+    xs = list(range(0, w - window + 1, stride))
+    t0 = time.perf_counter()
+    chips, pos = [], []
+    for y in ys:
+        for x in xs:
+            chips.append(dn[y:y + window, x:x + window])
+            pos.append((y, x))
+    preds, probas = [], []
+    for i in range(0, len(chips), 2000):
+        refl = P.fix_invalid(P.to_reflectance(np.stack(chips[i:i + 2000]), "sentinel2"))
+        pr = bundle["model"].predict_proba(FE.patch_features(refl, "sentinel2"))
+        probas.append(pr.max(axis=1))
+        preds.append(pr.argmax(axis=1))
+    pred, conf = np.concatenate(preds), np.concatenate(probas)
+    secs = time.perf_counter() - t0
 
-    Parâmetros
-    ----------
-    file_bytes : bytes — conteúdo do arquivo de imagem
-    img_size   : tamanho para redimensionamento
+    # cada janela pinta o seu bloco central stride×stride
+    grid = np.full((h, w), -1, dtype=np.int64)
+    off = (window - stride) // 2
+    for (y, x), k in zip(pos, pred):
+        grid[y + off:y + off + stride, x + off:x + off + stride] = k
 
-    Retorna
-    -------
-    dict com resultado da classificação + imagem base64
-    """
-    pil = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-    if pil.size != (img_size, img_size):
-        pil = pil.resize((img_size, img_size), Image.LANCZOS)
-
-    img = np.array(pil).astype(np.float32) / 255.0
-    result = classify_image(img)
-
-    buf = io.BytesIO()
-    pil.save(buf, format="PNG")
-    result["image_b64"] = base64.b64encode(buf.getvalue()).decode()
-    return result
-
-
-# ─── Mapa de classificação ────────────────────────────────────────────────────
-
-def generate_class_map(
-    X: np.ndarray,
-    y_true: np.ndarray | None = None,
-    n_cols: int = 15,
-    save_path: Path | None = None,
-) -> np.ndarray:
-    """
-    Gera mapa visual de classificação para uma grade de imagens.
-
-    Para cada imagem, pinta um quadrado com a cor da classe prevista.
-    Se y_true for fornecido, marca erros com borda vermelha.
-
-    Parâmetros
-    ----------
-    X       : ndarray (N, H, W, 3)
-    y_true  : ndarray (N,) — rótulos verdadeiros (opcional)
-    n_cols  : colunas na grade
-    save_path : onde salvar a figura
-
-    Retorna
-    -------
-    ndarray (H_grid, W_grid, 3) — imagem RGB do mapa
-    """
-    clf = load_model()
-    metrics = load_metrics()
-    active_classes = metrics.get("class_names", CLASS_NAMES)
-
-    # Features
-    from feature_extraction import extract_features_batch
-    F = extract_features_batch(X, verbose=False)
-    y_pred = clf.predict(F)
-
-    n = len(X)
-    img_h, img_w = X.shape[1], X.shape[2]
-    n_rows = (n + n_cols - 1) // n_cols
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 1.2, n_rows * 1.5))
-    if n_rows == 1:
-        axes = axes[np.newaxis, :]
-
-    for row in range(n_rows):
-        for col in range(n_cols):
-            idx = row * n_cols + col
-            ax = axes[row, col]
-            ax.axis("off")
-            if idx >= n:
-                continue
-
-            pred_name = CLASS_NAMES[y_pred[idx]] if y_pred[idx] < len(CLASS_NAMES) else "?"
-            color = CLASS_COLORS.get(pred_name, "#95A5A6")
-
-            ax.imshow(X[idx])
-            for spine in ax.spines.values():
-                spine.set_visible(True)
-                spine.set_linewidth(3)
-                if y_true is not None and y_true[idx] != y_pred[idx]:
-                    spine.set_edgecolor("#E74C3C")  # erro = vermelho
-                else:
-                    spine.set_edgecolor(color)
-
-    # Legenda
-    legend_elements = [
-        mpatches.Patch(facecolor=CLASS_COLORS.get(cls, "#95A5A6"), label=cls)
-        for cls in active_classes
-    ]
-    fig.legend(handles=legend_elements, loc="lower center", ncol=min(5, len(active_classes)),
-               fontsize=8, framealpha=0.9, bbox_to_anchor=(0.5, -0.02))
-
-    title = "Mapa de Classificação — Random Forest"
-    if y_true is not None:
-        n_errors = int(np.sum(y_true != y_pred))
-        title += f" (erros: {n_errors}/{n})"
-    fig.suptitle(title, fontsize=13, fontweight="bold")
-    plt.tight_layout(rect=[0, 0.05, 1, 0.97])
-
-    if save_path:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=120, bbox_inches="tight")
-        print(f"✓ Mapa salvo: {save_path}")
-
-    # Converte fig para array
-    fig.canvas.draw()
-    w_fig, h_fig = fig.canvas.get_width_height()
-    buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    buf = buf.reshape(h_fig, w_fig, 3)
-    plt.close()
-    return buf
+    macro_names = [c for c in C.LANDCOVER_CLASSES if c != "Solo exposto"]
+    to_macro = np.array([macro_names.index(C.EUROSAT_TO_MACRO[c]) for c in C.EUROSAT_CLASSES])
+    lc_to_macro = {C.LANDCOVER_CLASSES.index(c): macro_names.index(c) for c in macro_names}
+    agree, total, conf_m = 0, 0, np.zeros((4, 4), dtype=np.int64)
+    for (y, x), k in zip(pos, pred):
+        r = ref[y:y + window, x:x + window]
+        r = r[r >= 0]
+        if r.size < window * window * 0.5:
+            continue
+        maj = int(np.bincount(r, minlength=5).argmax())
+        if maj not in lc_to_macro:  # solo exposto: sem classe equivalente no EuroSAT
+            continue
+        t, p = lc_to_macro[maj], int(to_macro[k])
+        conf_m[t, p] += 1
+        agree += int(t == p)
+        total += 1
+    counts = np.bincount(pred, minlength=10)
+    return dict(grid=grid, pred=pred, conf=conf, pos=pos, seconds=round(secs, 1),
+                n_windows=len(pred), agreement_macro=agree / max(total, 1), n_compared=total,
+                confusion_macro=conf_m.tolist(), macro_names=macro_names,
+                class_counts={c: int(n) for c, n in zip(C.EUROSAT_CLASSES, counts)})
 
 
-def generate_thematic_map(
-    class_names_sample: list[str],
-    save_path: Path | None = None,
-) -> None:
-    """
-    Gera mapa temático compacto por macro-classe com paleta de cores.
-    Simula um mapa de cobertura territorial.
-    """
-    PREDS.mkdir(parents=True, exist_ok=True)
+def main() -> None:
+    print("=" * 64 + "\n  Classificação por região — EuroSAT (Europa) → Mossoró/RN\n" + "=" * 64)
+    r = region_map()
+    print(f"  {r['n_windows']} janelas de 640 m em {r['seconds']} s")
+    print(f"  concordância com a referência (4 macro-classes): {r['agreement_macro']:.1%} "
+          f"em {r['n_compared']} janelas")
+    for c, n in sorted(r["class_counts"].items(), key=lambda kv: -kv[1]):
+        print(f"    {c:22s} {n:5d}")
+    C.PREDICTIONS.mkdir(parents=True, exist_ok=True)
+    np.save(C.PREDICTIONS / "s2_region_grid.npy", r["grid"])
+    out = {k: v for k, v in r.items() if k not in ("grid", "pred", "conf", "pos")}
+    out.update(window_px=64, window_m=640, stride_px=32, mean_confidence=float(r["conf"].mean()),
+               model="rf_eurosat_ms", scene=D.scene_info()["s2"],
+               note="Modelo treinado no EuroSAT (Europa) aplicado sem ajuste à caatinga: "
+                    "mede a transferência entre domínios, não a acurácia do classificador.")
+    (C.METRICS / "s2_region.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
+    print("  ✓ results/metrics/s2_region.json")
 
-    from data_loader import load_samples_by_class, EUROSAT_RGB_DIR
-    if not EUROSAT_RGB_DIR.exists():
-        print("  ⚠ Dataset não encontrado. Execute data_loader.py primeiro.")
-        return
-
-    samples = load_samples_by_class(n_per_class=8)
-
-    fig, axes = plt.subplots(4, 8, figsize=(18, 9))
-    fig.patch.set_facecolor("#1A1A2E")
-    fig.suptitle("Mapa Temático de Cobertura do Solo — EuroSAT", 
-                 fontsize=15, fontweight="bold", color="white", y=0.98)
-
-    classes_to_show = [c for c in CLASS_NAMES if c in samples]
-    colors = [CLASS_COLORS.get(c, "#95A5A6") for c in classes_to_show]
-
-    row_idx = 0
-    for cls in classes_to_show:
-        if row_idx >= 4:
-            break
-        imgs = samples[cls]
-        for col_idx, img in enumerate(imgs[:8]):
-            ax = axes[row_idx, col_idx]
-            ax.imshow(img)
-            ax.axis("off")
-            # Borda colorida por classe
-            for spine in ax.spines.values():
-                spine.set_visible(True)
-                spine.set_linewidth(2)
-                spine.set_edgecolor(CLASS_COLORS.get(cls, "#fff"))
-        row_idx += 1
-
-    # Esconde eixos vazios
-    for r in range(row_idx, 4):
-        for c in range(8):
-            axes[r, c].axis("off")
-
-    # Legenda
-    legend_elements = [
-        mpatches.Patch(facecolor=CLASS_COLORS.get(cls, "#95A5A6"), label=cls, edgecolor="white")
-        for cls in classes_to_show
-    ]
-    fig.legend(handles=legend_elements, loc="lower center", ncol=5,
-               fontsize=9, framealpha=0.8, facecolor="#2D2D44", 
-               labelcolor="white", edgecolor="#555",
-               bbox_to_anchor=(0.5, 0.0))
-
-    plt.tight_layout(rect=[0, 0.06, 1, 0.97])
-
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight", facecolor="#1A1A2E")
-        print(f"✓ Mapa temático salvo: {save_path}")
-    plt.close()
-
-
-# ─── Execução direta ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("predict.py — testando carregamento do modelo e classificação")
-    try:
-        metrics = load_metrics()
-        print(f"  Modelo: {metrics.get('model', '?')}")
-        print(f"  Acurácia (teste): {metrics.get('test_accuracy', '?'):.1%}")
-        print(f"  Classes: {metrics.get('class_names', [])}")
-    except Exception as e:
-        print(f"  ⚠ {e}")
-
-    # Gera mapa temático
-    print("\nGerando mapa temático...")
-    PREDS.mkdir(parents=True, exist_ok=True)
-    generate_thematic_map(CLASS_NAMES, save_path=PREDS / "thematic_map.png")
-    print("✓ predict.py OK")
+    main()

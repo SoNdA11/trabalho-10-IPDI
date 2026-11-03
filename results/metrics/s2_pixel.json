@@ -1,0 +1,428 @@
+{
+  "experiment": "s2",
+  "level": "pixel",
+  "scene": {
+    "satellite": "Sentinel-2B",
+    "sensor": "MSI",
+    "level": "L1C (TOA)",
+    "date": "2024-09-01",
+    "item": "S2B_MSIL1C_20240901T125309_N0511_R052_T24MXV_20240901T132229",
+    "collection": "S2_L1C_BUNDLE-1",
+    "bands": 13,
+    "resolution_m": 10,
+    "provider": "INPE — Brazil Data Cube"
+  },
+  "aoi": "Mossoró/RN",
+  "aoi_bbox": [
+    -37.45,
+    -5.3,
+    -37.22,
+    -5.08
+  ],
+  "shape": [
+    2442,
+    2558
+  ],
+  "resolution_m": 10.0,
+  "reference": "ESA WorldCover 2021 v200 (reclassificado em 5 classes)",
+  "classes": [
+    "Vegetação",
+    "Área agrícola",
+    "Área urbana",
+    "Solo exposto",
+    "Água"
+  ],
+  "feature_names": [
+    "B01",
+    "B02",
+    "B03",
+    "B04",
+    "B05",
+    "B06",
+    "B07",
+    "B08",
+    "B09",
+    "B10",
+    "B11",
+    "B12",
+    "B8A",
+    "NDVI",
+    "NDWI",
+    "MNDWI",
+    "NDBI",
+    "BSI",
+    "NDVI_media5x5",
+    "NDVI_desvio5x5",
+    "NIR_media5x5",
+    "NIR_desvio5x5"
+  ],
+  "feature_dim": 22,
+  "split": "blocos de 1.28 km (60/20/20) com faixa de exclusão de 2 px",
+  "sampling": "treino ∝ √(frequência da classe), mínimo 1500/classe; validação aleatória; teste = todos os pixels dos blocos de teste",
+  "n_train": 40000,
+  "n_val": 20000,
+  "n_test": 1096671,
+  "class_pixels_total": {
+    "Vegetação": 5147971,
+    "Área agrícola": 266161,
+    "Área urbana": 424140,
+    "Solo exposto": 180105,
+    "Água": 228259
+  },
+  "model": "RandomForestClassifier",
+  "n_estimators": 200,
+  "params": {
+    "max_features": "sqrt",
+    "min_samples_leaf": 1
+  },
+  "tuning": [
+    {
+      "max_features": "sqrt",
+      "min_samples_leaf": 1,
+      "val_macro_f1": 0.7179912331511402,
+      "seconds": 6.4
+    },
+    {
+      "max_features": "sqrt",
+      "min_samples_leaf": 3,
+      "val_macro_f1": 0.7163021514543486,
+      "seconds": 5.9
+    },
+    {
+      "max_features": 0.3,
+      "min_samples_leaf": 1,
+      "val_macro_f1": 0.7173045402633831,
+      "seconds": 9.0
+    },
+    {
+      "max_features": 0.3,
+      "min_samples_leaf": 3,
+      "val_macro_f1": 0.7155145998588649,
+      "seconds": 8.4
+    }
+  ],
+  "train_seconds": 6.15,
+  "map_seconds": 26.7,
+  "predict_us_per_pixel": 4.33,
+  "test": {
+    "n": 1096671,
+    "accuracy": 0.8861354043281896,
+    "kappa": 0.6058153343696817,
+    "macro_precision": 0.5908142632015695,
+    "macro_recall": 0.7208060028481483,
+    "macro_f1": 0.6423399305808687,
+    "weighted_f1": 0.8963217419804889,
+    "per_class": {
+      "Vegetação": {
+        "precision": 0.9721836288668579,
+        "recall": 0.9136849715399216,
+        "f1": 0.9420270013310516,
+        "support": 948873
+      },
+      "Área agrícola": {
+        "precision": 0.3623538660881972,
+        "recall": 0.5376522941328955,
+        "f1": 0.43293123092042896,
+        "support": 46292
+      },
+      "Área urbana": {
+        "precision": 0.6950495557293603,
+        "recall": 0.8933880483865652,
+        "f1": 0.78183614454356,
+        "support": 60678
+      },
+      "Solo exposto": {
+        "precision": 0.351458115487394,
+        "recall": 0.6091115026428392,
+        "f1": 0.44572965207301124,
+        "support": 19865
+      },
+      "Água": {
+        "precision": 0.5730261498360381,
+        "recall": 0.6501931975385202,
+        "f1": 0.6091756240362913,
+        "support": 20963
+      }
+    },
+    "confusion_matrix": [
+      [
+        866971,
+        42780,
+        18165,
+        12504,
+        8453
+      ],
+      [
+        18684,
+        24889,
+        2047,
+        626,
+        46
+      ],
+      [
+        3261,
+        411,
+        54209,
+        2784,
+        13
+      ],
+      [
+        2086,
+        599,
+        3436,
+        12100,
+        1644
+      ],
+      [
+        775,
+        8,
+        136,
+        6414,
+        13630
+      ]
+    ],
+    "labels": [
+      "Vegetação",
+      "Área agrícola",
+      "Área urbana",
+      "Solo exposto",
+      "Água"
+    ]
+  },
+  "test_majority3x3": {
+    "n": 1096671,
+    "accuracy": 0.8923341640291391,
+    "kappa": 0.619592088663516,
+    "macro_precision": 0.6019079308071483,
+    "macro_recall": 0.7211244127471896,
+    "macro_f1": 0.6506552104162171,
+    "weighted_f1": 0.9005866336210826,
+    "per_class": {
+      "Vegetação": {
+        "precision": 0.9713202554795244,
+        "recall": 0.920763895695209,
+        "f1": 0.9453666443405444,
+        "support": 948873
+      },
+      "Área agrícola": {
+        "precision": 0.38759089472020236,
+        "recall": 0.5296595524064633,
+        "f1": 0.44762304658974733,
+        "support": 46292
+      },
+      "Área urbana": {
+        "precision": 0.7029370270616904,
+        "recall": 0.9032598305811003,
+        "f1": 0.7906064277883561,
+        "support": 60678
+      },
+      "Solo exposto": {
+        "precision": 0.36939769434683434,
+        "recall": 0.603272086584445,
+        "f1": 0.4582178293536238,
+        "support": 19865
+      },
+      "Água": {
+        "precision": 0.57829378242749,
+        "recall": 0.6486666984687306,
+        "f1": 0.6114621040088135,
+        "support": 20963
+      }
+    },
+    "confusion_matrix": [
+      [
+        873688,
+        38058,
+        17487,
+        11383,
+        8257
+      ],
+      [
+        19150,
+        24519,
+        2093,
+        490,
+        40
+      ],
+      [
+        3543,
+        244,
+        54808,
+        2073,
+        10
+      ],
+      [
+        2372,
+        438,
+        3462,
+        11984,
+        1609
+      ],
+      [
+        732,
+        1,
+        120,
+        6512,
+        13598
+      ]
+    ],
+    "labels": [
+      "Vegetação",
+      "Área agrícola",
+      "Área urbana",
+      "Solo exposto",
+      "Água"
+    ]
+  },
+  "sampling_study": {
+    "balanceada (8000/classe)": {
+      "n_train": 40000,
+      "accuracy": 0.7744774868670732,
+      "kappa": 0.4436569494613838,
+      "macro_f1": 0.5835223236376045,
+      "f1": {
+        "Vegetação": 0.866941319376895,
+        "Área agrícola": 0.2993646070575284,
+        "Área urbana": 0.7628299280157057,
+        "Solo exposto": 0.4113938430080654,
+        "Água": 0.577081920729828
+      }
+    },
+    "proporcional (aleatória)": {
+      "n_train": 40000,
+      "accuracy": 0.9124432031119634,
+      "kappa": 0.6081841291729218,
+      "macro_f1": 0.5996401308759177,
+      "f1": {
+        "Vegetação": 0.9574132917684515,
+        "Área agrícola": 0.2944783361677562,
+        "Área urbana": 0.8023654883728236,
+        "Solo exposto": 0.3859255002350974,
+        "Água": 0.5580180378354598
+      }
+    },
+    "raiz da frequência (usada)": {
+      "n_train": 40000,
+      "accuracy": 0.8861354043281896,
+      "kappa": 0.6058153343696817,
+      "macro_f1": 0.6423399305808687,
+      "f1": {
+        "Vegetação": 0.9420270013310516,
+        "Área agrícola": 0.43293123092042896,
+        "Área urbana": 0.78183614454356,
+        "Solo exposto": 0.44572965207301124,
+        "Água": 0.6091756240362913
+      }
+    }
+  },
+  "random_split_test": {
+    "accuracy": 0.893355,
+    "macro_f1": 0.7303368764964008,
+    "kappa": 0.6963082870297705,
+    "n_test": 200000
+  },
+  "area_km2_pred": {
+    "Vegetação": 486.6854,
+    "Área agrícola": 34.4662,
+    "Área urbana": 51.2717,
+    "Solo exposto": 24.6276,
+    "Água": 27.6127
+  },
+  "area_km2_ref": {
+    "Vegetação": 514.7971,
+    "Área agrícola": 26.616100000000003,
+    "Área urbana": 42.414,
+    "Solo exposto": 18.0105,
+    "Água": 22.8259
+  },
+  "feature_importance": [
+    {
+      "name": "NDVI_media5x5",
+      "importance": 0.08237782258702561
+    },
+    {
+      "name": "B01",
+      "importance": 0.07477172079599
+    },
+    {
+      "name": "B12",
+      "importance": 0.07291331327839262
+    },
+    {
+      "name": "NDWI",
+      "importance": 0.06910720183579114
+    },
+    {
+      "name": "NDVI",
+      "importance": 0.06522499751900233
+    },
+    {
+      "name": "B11",
+      "importance": 0.06035861970492916
+    },
+    {
+      "name": "NDVI_desvio5x5",
+      "importance": 0.051030911487036
+    },
+    {
+      "name": "MNDWI",
+      "importance": 0.05075503543241188
+    },
+    {
+      "name": "B05",
+      "importance": 0.04973480457968311
+    },
+    {
+      "name": "B03",
+      "importance": 0.04812033375229413
+    },
+    {
+      "name": "B02",
+      "importance": 0.04376170860246557
+    },
+    {
+      "name": "B8A",
+      "importance": 0.03979705334767445
+    },
+    {
+      "name": "B06",
+      "importance": 0.03731698346403057
+    },
+    {
+      "name": "B09",
+      "importance": 0.03692094329499976
+    },
+    {
+      "name": "NIR_media5x5",
+      "importance": 0.03661757878434403
+    },
+    {
+      "name": "B07",
+      "importance": 0.030933554680879678
+    },
+    {
+      "name": "B04",
+      "importance": 0.03062806894255846
+    },
+    {
+      "name": "NIR_desvio5x5",
+      "importance": 0.029990753179987693
+    },
+    {
+      "name": "BSI",
+      "importance": 0.028855772425930265
+    },
+    {
+      "name": "B08",
+      "importance": 0.022661762681061567
+    },
+    {
+      "name": "NDBI",
+      "importance": 0.020707416894167746
+    },
+    {
+      "name": "B10",
+      "importance": 0.01741364272934415
+    }
+  ]
+}

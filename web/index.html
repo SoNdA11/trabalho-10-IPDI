@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Classificador de Cobertura do Solo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a9e88'/%3E%3Crect x='6' y='6' width='9' height='9' fill='%23fff'/%3E%3Crect x='17' y='6' width='9' height='9' fill='%23e9b824'/%3E%3Crect x='6' y='17' width='9' height='9' fill='%232f6bd8'/%3E%3Crect x='17' y='17' width='9' height='9' fill='%23d63a4a'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <div>
+      <div class="kicker">Trabalho 10 · PDI · demonstração</div>
+      <h1>Classificador de cobertura do solo</h1>
+    </div>
+  </div>
+  <div class="top-right">
+    <div id="status" class="status"></div>
+    <button id="theme" class="ghost" title="Alternar tema (T)">◐</button>
+  </div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="chip" class="active"><b>1</b> Imagem inteira <small>EuroSAT</small></button>
+  <button role="tab" data-tab="scene"><b>2</b> Mapa por pixel <small>INPE · Mossoró/RN</small></button>
+  <button role="tab" data-tab="metrics"><b>3</b> Métricas do modelo</button>
+</nav>
+
+<main>
+  <!-- ═══ 1. Imagem inteira ═══ -->
+  <section id="tab-chip" class="tab active">
+    <div class="cols">
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Escolha um recorte de teste</h2>
+          <select id="classFilter"><option value="">todas as classes</option></select>
+        </div>
+        <p class="hint">Recortes 64×64 px (640 m) do <b>conjunto de teste</b>: o modelo nunca os viu no treino nem na escolha de hiperparâmetros.</p>
+        <div id="samples" class="samples"></div>
+        <label class="drop" id="drop">
+          <input type="file" id="upload" accept=".tif,.tiff,.jpg,.jpeg,.png">
+          <span><b>Enviar arquivo</b> · GeoTIFF de 13 bandas (formato EuroSAT MS) ou JPG/PNG</span>
+        </label>
+      </div>
+      <div class="panel" id="chipResult">
+        <div class="empty">Selecione um recorte para classificá-lo em tempo real.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 2. Mapa por pixel ═══ -->
+  <section id="tab-scene" class="tab">
+    <div class="toolbar">
+      <div class="seg" id="sceneSel"></div>
+      <label>Janela
+        <select id="winSize"><option>128</option><option selected>256</option><option>512</option></select> px
+      </label>
+      <label class="check"><input type="checkbox" id="majority" checked> filtro de moda 3×3</label>
+      <button id="btnFull" class="primary">Classificar a cena inteira</button>
+      <span id="sceneMeta" class="meta"></span>
+    </div>
+    <div class="cols cols-scene">
+      <div class="panel">
+        <div class="panel-head"><h2>Cena do INPE</h2><span class="hint">clique para escolher a janela</span></div>
+        <div class="scene-wrap" id="sceneWrap">
+          <img id="sceneImg" alt="Cena em cor verdadeira">
+          <img id="fullMap" alt="Mapa da cena inteira" class="overlay">
+          <div id="winBox" class="winbox"></div>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div id="fullInfo" class="hint"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Classificação da janela</h2><span id="winMeta" class="meta"></span></div>
+        <div class="triple">
+          <figure><img id="wTrue" alt=""><figcaption>cor verdadeira</figcaption></figure>
+          <figure><img id="wMap" alt=""><figcaption>mapa do classificador</figcaption></figure>
+          <figure><img id="wRef" alt=""><figcaption>referência (WorldCover)</figcaption></figure>
+        </div>
+        <p class="hint" style="margin:8px 0 0">A concordância da janela inclui blocos de treino; as métricas oficiais (aba 3) usam só os blocos de teste.</p>
+        <div id="winFractions" class="bars"></div>
+        <div class="panel-head mt"><h2>Pixel clicado</h2><span id="pxMeta" class="meta"></span></div>
+        <div id="pixelInfo" class="pixel"><div class="empty small">Clique na cena para ver as características do pixel.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ 3. Métricas ═══ -->
+  <section id="tab-metrics" class="tab">
+    <div id="metrics"></div>
+  </section>
+</main>
+
+<footer class="foot">Dados: EuroSAT MS (Helber et al., 2019) · Sentinel-2 L1C e CBERS-4 MUX via INPE — Brazil Data Cube · referência ESA WorldCover 2021. Classificador: Random Forest (scikit-learn).</footer>
+
+<script src="/web/app.js"></script>
+</body>
+</html>
